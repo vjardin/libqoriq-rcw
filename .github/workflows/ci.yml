@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright 2026 Free Mobile -- Vincent Jardin
+#
+# CI for libqoriq-rcw.
+# Builds the library with sanitizers and runs the cmocka test suite on a
+# matrix of {x86_64, ARM64} x {gcc, clang}. Also runs shellcheck on any
+# shell scripts and verifies meson dist produces a clean source tarball.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        cc: [gcc, clang]
+    runs-on: ${{ matrix.os }}
+    name: build+test (${{ matrix.os }}, ${{ matrix.cc }})
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config \
+            libcmocka-dev pandoc \
+            gcc clang libclang-rt-18-dev
+
+      - name: meson setup (with AddressSanitizer + UBSan)
+        # b_lundef=false is required when building shared libraries
+        # with clang sanitizers: clang expects the sanitizer runtime
+        # symbols to remain undefined at link time and be resolved
+        # at load time, which conflicts with meson's default
+        # -Wl,--no-undefined.
+        run: meson setup build -Db_sanitize=address,undefined -Db_lundef=false
+
+      - name: meson compile
+        run: meson compile -C build
+
+      - name: meson test
+        run: meson test -C build --print-errorlogs
+
+      - name: Upload meson logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-logs-${{ matrix.os }}-${{ matrix.cc }}
+          path: build/meson-logs/
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    name: shellcheck
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run shellcheck on all shell scripts
+        run: |
+          shopt -s globstar nullglob
+          files=(**/*.sh)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No shell scripts found, skipping."
+            exit 0
+          fi
+          shellcheck --severity=style "${files[@]}"
+
+  dist:
+    runs-on: ubuntu-24.04
+    name: meson dist
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config libcmocka-dev pandoc
+
+      - name: meson setup
+        run: meson setup build
+
+      - name: meson dist
+        run: meson dist -C build --no-tests
+
+      - name: Upload dist tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-tarball
+          path: build/meson-dist/*.tar.xz
