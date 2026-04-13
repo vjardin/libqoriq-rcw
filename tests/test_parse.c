@@ -3,14 +3,40 @@
  * Copyright 2026 Free Mobile - Vincent Jardin
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <setjmp.h>
 #include <string.h>
+#include <unistd.h>
 #include <cmocka.h>
 
 #include "rcw_internal.h"
+
+/*
+ * Redirect stderr to a tmpfile, run `body`, then read what was written
+ * and copy it into `out` (NUL-terminated, truncated to out_size-1).
+ * Restores stderr afterwards.
+ */
+#define CAPTURE_STDERR(out, out_size, body)                              \
+	do {                                                             \
+		fflush(stderr);                                          \
+		int _saved = dup(fileno(stderr));                        \
+		FILE *_tmp = tmpfile();                                  \
+		assert_non_null(_tmp);                                   \
+		dup2(fileno(_tmp), fileno(stderr));                      \
+		body;                                                    \
+		fflush(stderr);                                          \
+		rewind(_tmp);                                            \
+		size_t _n = fread((out), 1, (out_size) - 1, _tmp);       \
+		(out)[_n] = '\0';                                        \
+		dup2(_saved, fileno(stderr));                            \
+		close(_saved);                                           \
+		fclose(_tmp);                                            \
+	} while (0)
 
 static const char minimal_source[] =
 	"%size=1024\n"
@@ -190,6 +216,69 @@ static void test_parse_whitespace(void **state)
 	rcw_ctx_free(ctx);
 }
 
+/*
+ * Test -w (warnings) for duplicate bitfield assignments.
+ * Mirrors rcw.py's behavior at lines 515-516:
+ *   if options.warnings and (name in assignments):
+ *       print('Warning: Duplicate assignment for bitfield', name)
+ *
+ * Wording must match exactly (only the output stream differs:
+ * rcw.py prints to stdout, libqoriq-rcw to stderr).
+ */
+static const char dup_assign_source[] =
+	"%size=1024\n"
+	"%pbiformat=2\n"
+	"SYS_PLL_RAT[6:2]\n"
+	"SYS_PLL_RAT=14\n"
+	"SYS_PLL_RAT=10\n";
+
+static void test_parse_dup_assign_warns_when_enabled(void **state)
+{
+	(void)state;
+	rcw_ctx_t *ctx = rcw_ctx_new();
+	assert_non_null(ctx);
+	rcw_ctx_set_warnings(ctx, 1);
+
+	char buf[256];
+	rcw_error_t err = RCW_OK;
+	CAPTURE_STDERR(buf, sizeof(buf), {
+		err = rcw_parse(ctx, dup_assign_source,
+				strlen(dup_assign_source));
+	});
+
+	assert_int_equal(err, RCW_OK);
+	assert_non_null(strstr(buf, "Warning: Duplicate assignment for bitfield SYS_PLL_RAT"));
+
+	/* Last assignment wins */
+	assert_true(ctx->symbols.entries[0].has_value);
+	assert_int_equal(ctx->symbols.entries[0].value, 10);
+
+	rcw_ctx_free(ctx);
+}
+
+static void test_parse_dup_assign_silent_when_disabled(void **state)
+{
+	(void)state;
+	rcw_ctx_t *ctx = rcw_ctx_new();
+	assert_non_null(ctx);
+	/* warnings disabled (default) */
+
+	char buf[256];
+	rcw_error_t err = RCW_OK;
+	CAPTURE_STDERR(buf, sizeof(buf), {
+		err = rcw_parse(ctx, dup_assign_source, strlen(dup_assign_source));
+	});
+
+	assert_int_equal(err, RCW_OK);
+	assert_null(strstr(buf, "Duplicate assignment"));
+
+	/* Last assignment still wins regardless of -w */
+	assert_true(ctx->symbols.entries[0].has_value);
+	assert_int_equal(ctx->symbols.entries[0].value, 10);
+
+	rcw_ctx_free(ctx);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -200,6 +289,8 @@ int main(void)
 		cmocka_unit_test(test_parse_single_bit),
 		cmocka_unit_test(test_parse_pbi_block),
 		cmocka_unit_test(test_parse_whitespace),
+		cmocka_unit_test(test_parse_dup_assign_warns_when_enabled),
+		cmocka_unit_test(test_parse_dup_assign_silent_when_disabled),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
