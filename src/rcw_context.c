@@ -278,6 +278,17 @@ rcw_decompile_file(rcw_ctx_t *ctx, const char *bin_path, const char *rcwi_path, 
   return err;
 }
 
+rcw_error_t
+rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path,
+                    char **out, size_t *out_len) {
+  if (!ctx || !input_path || !out || !out_len)
+    return RCW_ERR_IO;
+
+  ctx->error_detail[0] = '\0';
+
+  return rcw_preprocess(ctx, input_path, out, out_len);
+}
+
 const char *
 rcw_strerror(rcw_error_t err) {
   switch (err) {

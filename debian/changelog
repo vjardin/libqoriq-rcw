@@ -1,3 +1,13 @@
+libqoriq-rcw (0.2.0-1) unstable; urgency=medium
+
+  * New public API: rcw_preprocess_file(). Runs the embedded mcpp
+    preprocessor on a path and returns the expanded text, ready for
+    rcw_compile_buffer() / rcw_decompile_buffer(). Lets in-memory
+    pipelines avoid the tempfile dance previously needed by callers
+    that already had the binary in RAM (e.g. qoriq-rcw --dump).
+
+ -- Vincent Jardin <vjardin@free.fr>  Mon, 13 Apr 2026 14:30:00 +0000
+
 libqoriq-rcw (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian/Ubuntu packaging.

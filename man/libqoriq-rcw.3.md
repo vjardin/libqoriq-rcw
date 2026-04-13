@@ -36,6 +36,9 @@ rcw_error_t rcw_decompile_buffer(rcw_ctx_t *ctx,
                                  const char *rcwi_name,
                                  char **out_source, size_t *out_len);
 
+rcw_error_t rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path,
+                                char **out, size_t *out_len);
+
 const char *rcw_strerror(rcw_error_t err);
 const char *rcw_ctx_last_error_detail(const rcw_ctx_t *ctx);
 
@@ -125,6 +128,21 @@ These functions configure the context before compilation or decompilation.
     the caller controls preprocessing, or for unit testing. If
     *rcwi_name* is non-NULL, the output is prefixed with
     **#include <***rcwi_name***>\\n\\n**; pass **NULL** to omit the header.
+
+## Standalone Preprocessing
+
+**rcw_preprocess_file**(*ctx*, *input_path*, *out*, *out_len*)
+:   Run the embedded **mcpp** preprocessor on *input_path*, honouring
+    include paths previously added via **rcw_ctx_add_include_path()**.
+    On success, *\*out* is a newly-allocated NUL-terminated buffer
+    holding the preprocessed text and *\*out_len* is its length
+    (excluding the NUL). The caller must free it with **rcw_free()**.
+
+    This function exists so that callers can hand pre-expanded text to
+    **rcw_compile_buffer()** or **rcw_decompile_buffer()** without
+    having to write the source to a file first. Useful for in-memory
+    pipelines (e.g. **qoriq-rcw \-\-dump**, where the binary is already
+    a 128-byte buffer and a tempfile would be wasteful).
 
 ## Error Handling
 

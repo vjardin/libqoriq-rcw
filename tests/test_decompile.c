@@ -3,11 +3,16 @@
  * Copyright 2026 Free Mobile - Vincent Jardin
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <setjmp.h>
 #include <string.h>
+#include <unistd.h>
 #include <cmocka.h>
 
 #include "rcw_internal.h"
@@ -366,6 +371,78 @@ test_decompile_buffer_roundtrip(void **state) {
   rcw_ctx_free(ctx3);
 }
 
+/*
+ * Exercise rcw_preprocess_file(): write a small .rcwi to a tempfile
+ * (with a #define that mcpp must expand), preprocess it, feed the
+ * result to rcw_compile_buffer(). End-to-end this proves the new
+ * public preprocess API correctly invokes mcpp and produces text
+ * the rest of the library can consume.
+ */
+static void
+test_preprocess_file_roundtrip(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "#define RAT 14\n"
+    "SYS_PLL_RAT[6:2]\n"
+    "SYS_PLL_RAT=RAT\n"
+    "PBI_LENGTH[287:276]\n";
+
+  char tmpl[] = "/tmp/test-pp-XXXXXX";
+  int fd = mkstemp(tmpl);
+  assert_true(fd >= 0);
+  ssize_t n = write(fd, src, sizeof(src) - 1);
+  assert_int_equal(n, (ssize_t)(sizeof(src) - 1));
+  close(fd);
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  assert_non_null(ctx);
+
+  char *pp = NULL;
+  size_t pp_len = 0;
+  rcw_error_t err = rcw_preprocess_file(ctx, tmpl, &pp, &pp_len);
+  assert_int_equal(err, RCW_OK);
+  assert_non_null(pp);
+  assert_true(pp_len > 0);
+  /* mcpp expanded RAT -> 14 (it preserves a token boundary, so the
+   * actual line reads "SYS_PLL_RAT= 14"; whitespace is irrelevant
+   * since the parser strips it on non-PBI lines).
+   */
+  assert_non_null(strstr(pp, "14"));
+  assert_null(strstr(pp, "=RAT"));
+  assert_null(strstr(pp, "= RAT"));
+  /* The #define line itself is consumed by the preprocessor. */
+  assert_null(strstr(pp, "#define"));
+
+  /* The preprocessed text round-trips through compile_buffer. */
+  uint8_t *bin = NULL;
+  size_t bin_len = 0;
+  err = rcw_compile_buffer(ctx, pp, pp_len, &bin, &bin_len);
+  assert_int_equal(err, RCW_OK);
+  assert_true(bin_len > 0);
+
+  rcw_free(bin);
+  rcw_free(pp);
+  rcw_ctx_free(ctx);
+  unlink(tmpl);
+}
+
+/*
+ * NOTE on mcpp re-entrancy:
+ *
+ * libmcpp keeps a substantial amount of static state and does not
+ * fully reset between mcpp_lib_main() calls in the same process.
+ * The CLI is unaffected (one invocation per fork+exec), but cmocka
+ * test suites can only safely exercise rcw_preprocess_file() /
+ * rcw_compile_file() / rcw_decompile_file() once per test binary.
+ * That is why this file has a single round-trip preprocess test and
+ * routes everything else through the buffer APIs.
+ */
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -374,6 +451,7 @@ main(void) {
     cmocka_unit_test(test_decompile_buffer_with_header),
     cmocka_unit_test(test_decompile_buffer_no_header),
     cmocka_unit_test(test_decompile_buffer_roundtrip),
+    cmocka_unit_test(test_preprocess_file_roundtrip),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

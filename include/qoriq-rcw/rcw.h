@@ -17,7 +17,7 @@ extern "C" {
 #endif
 
 #define QORIQ_RCW_VERSION_MAJOR 0
-#define QORIQ_RCW_VERSION_MINOR 1
+#define QORIQ_RCW_VERSION_MINOR 2
 #define QORIQ_RCW_VERSION_PATCH 0
 
 /* Error codes */
@@ -73,22 +73,39 @@ rcw_error_t rcw_compile_buffer(rcw_ctx_t *ctx, const char *preprocessed, size_t 
 /*
  * Reverse decompilation: .bin -> .rcw text
  *
- * rcw_decompile_file() preprocesses rcwi_path with the C preprocessor
- * (gcc -E) to obtain symbol definitions, then reads bin_path and
- * produces RCW source text. The output is prefixed with
+ * rcw_decompile_file() preprocesses rcwi_path with the embedded
+ * preprocessor (mcpp) to obtain symbol definitions, then reads
+ * bin_path and produces RCW source text. The output is prefixed with
  *     #include <basename(rcwi_path)>
  *
  * rcw_decompile_buffer() takes already-preprocessed .rcwi text and an
  * in-memory binary buffer. No preprocessor is invoked and no file
  * I/O is performed - useful for embedding the library in environments
- * where gcc is not available, or for unit testing. If rcwi_name is
- * non-NULL, the output is prefixed with "#include <rcwi_name>\n\n";
- * pass NULL to omit the header.
+ * where the .rcwi text is generated on the fly, or for unit testing.
+ * If rcwi_name is non-NULL, the output is prefixed with
+ * "#include <rcwi_name>\n\n"; pass NULL to omit the header.
  *
  * Both allocate *out_source; caller must free it with rcw_free().
  */
 rcw_error_t rcw_decompile_file(rcw_ctx_t *ctx, const char *bin_path, const char *rcwi_path, char **out_source, size_t *out_len);
 rcw_error_t rcw_decompile_buffer(rcw_ctx_t *ctx, const char *rcwi_preprocessed, size_t rcwi_len, const uint8_t *binary, size_t binary_len, const char *rcwi_name, char **out_source, size_t *out_len);
+
+/*
+ * Standalone preprocessing.
+ *
+ * Run the embedded mcpp preprocessor on input_path, honouring include
+ * paths previously added via rcw_ctx_add_include_path(). The resulting
+ * NUL-terminated text is suitable for direct use with
+ * rcw_compile_buffer() or rcw_decompile_buffer().
+ *
+ * On success, *out points to a newly-allocated buffer (length *out_len,
+ * excluding the terminating NUL). The caller must free it with
+ * rcw_free().
+ *
+ * On preprocessor failure, returns RCW_ERR_PREPROCESS and mcpp
+ * diagnostics are written to standard error.
+ */
+rcw_error_t rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path, char **out, size_t *out_len);
 
 /*
  * Error information
