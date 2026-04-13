@@ -28,7 +28,7 @@ jobs:
       CC: ${{ matrix.cc }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload meson logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: meson-logs-${{ matrix.os }}-${{ matrix.cc }}
           path: build/meson-logs/
@@ -64,7 +64,7 @@ jobs:
     name: shellcheck
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install shellcheck
         run: |
@@ -86,7 +86,7 @@ jobs:
     name: meson dist
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -103,7 +103,7 @@ jobs:
         run: meson dist -C build --no-tests
 
       - name: Upload dist tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: dist-tarball
           path: build/meson-dist/*.tar.xz
@@ -141,7 +141,7 @@ jobs:
             libmcpp-dev libcmocka-dev pandoc
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: dpkg-buildpackage
         run: dpkg-buildpackage -us -uc -b
@@ -153,7 +153,7 @@ jobs:
           ls -la artifacts/
 
       - name: Upload .deb packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: debs-${{ matrix.distro.slug }}-${{ matrix.arch.name }}
           path: artifacts/*.deb
