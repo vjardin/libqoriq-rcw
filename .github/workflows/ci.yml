@@ -107,3 +107,53 @@ jobs:
         with:
           name: dist-tarball
           path: build/meson-dist/*.tar.xz
+
+  package:
+    # Build libqoriq-rcw0 (runtime) and libqoriq-rcw-dev (headers/static/.pc)
+    # .deb packages for the supported Ubuntu LTS releases (24.04, 26.04) and
+    # the two latest Debian stable releases (12 bookworm, 13 trixie), on
+    # both amd64 and arm64. All builds run inside a distro container so the
+    # GitHub runner OS only provides the kernel and Docker.
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { name: amd64, runner: ubuntu-24.04 }
+          - { name: arm64, runner: ubuntu-24.04-arm }
+        distro:
+          - { image: 'ubuntu:24.04',    slug: 'ubuntu-24.04' }
+          - { image: 'ubuntu:26.04',    slug: 'ubuntu-26.04' }
+          - { image: 'debian:bookworm', slug: 'debian-12' }
+          - { image: 'debian:trixie',   slug: 'debian-13' }
+    runs-on: ${{ matrix.arch.runner }}
+    name: package (${{ matrix.distro.slug }}, ${{ matrix.arch.name }})
+    container:
+      image: ${{ matrix.distro.image }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git \
+            build-essential debhelper devscripts fakeroot \
+            meson ninja-build pkg-config \
+            libmcpp-dev libcmocka-dev pandoc
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: dpkg-buildpackage
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: Collect .deb artifacts
+        run: |
+          mkdir -p artifacts
+          mv ../libqoriq-rcw*_*.deb artifacts/
+          ls -la artifacts/
+
+      - name: Upload .deb packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.distro.slug }}-${{ matrix.arch.name }}
+          path: artifacts/*.deb

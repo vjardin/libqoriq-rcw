@@ -1,0 +1,5 @@
+usr/include/qoriq-rcw/*.h
+usr/lib/*/libqoriq-rcw.so
+usr/lib/*/libqoriq-rcw.a
+usr/lib/*/pkgconfig/libqoriq-rcw.pc
+usr/share/man/man3/libqoriq-rcw.3

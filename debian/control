@@ -1,0 +1,45 @@
+Source: libqoriq-rcw
+Section: libs
+Priority: optional
+Maintainer: Vincent Jardin <vjardin@free.fr>
+Build-Depends:
+ debhelper-compat (= 13),
+ meson,
+ ninja-build,
+ pkg-config,
+ libmcpp-dev,
+ libcmocka-dev,
+ pandoc
+Standards-Version: 4.6.2
+Homepage: https://github.com/vjardin/libqoriq-rcw
+Rules-Requires-Root: no
+
+Package: libqoriq-rcw0
+Architecture: any
+Multi-Arch: same
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: QorIQ Reset Configuration Word compiler library (runtime)
+ libqoriq-rcw is a C library for compiling NXP QorIQ Reset Configuration
+ Word source files into PBL/RCW binary images, and for decompiling those
+ images back to source text. It targets the PBI format 2 platforms:
+ LS1028, LS1088, LS2088 and LX2160 SoC families.
+ .
+ This package contains the shared library used at runtime.
+
+Package: libqoriq-rcw-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends:
+ libqoriq-rcw0 (= ${binary:Version}),
+ libmcpp-dev,
+ ${misc:Depends}
+Description: QorIQ Reset Configuration Word compiler library (development files)
+ libqoriq-rcw is a C library for compiling NXP QorIQ Reset Configuration
+ Word source files into PBL/RCW binary images, and for decompiling those
+ images back to source text. It targets the PBI format 2 platforms:
+ LS1028, LS1088, LS2088 and LX2160 SoC families.
+ .
+ This package contains the C header, static library, pkg-config file and
+ man page needed to build software against libqoriq-rcw.

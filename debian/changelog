@@ -1,0 +1,5 @@
+libqoriq-rcw (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian/Ubuntu packaging.
+
+ -- Vincent Jardin <vjardin@free.fr>  Mon, 13 Apr 2026 12:00:00 +0000
