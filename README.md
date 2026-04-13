@@ -30,18 +30,19 @@ Supported platforms: LS1028, LS1088, LS2088, and LX2160 families (PBI format 2).
 - Built as both shared (`.so`) and static (`.a`) libraries
 - pkg-config support for downstream integration
 - Bitfield override API (equivalent to command-line `-D` overrides)
-- Buffer-based compilation API for embedding without a `gcc` dependency
+- Buffer-based compilation API (`rcw_compile_buffer()` /
+  `rcw_decompile_buffer()`) for embedding already-preprocessed source
+- No runtime dependency on an external C compiler: preprocessing is
+  handled in-process by [mcpp](http://mcpp.sourceforge.net/)
 
 ## Dependencies
 
 - C17 compiler (gcc or clang)
-- Meson
-- cmocka (for tests only)
-- gcc in `PATH` at runtime - used as the C preprocessor for `.rcw` files
-  by `rcw_compile_file()` and `rcw_decompile_file()`. The buffer-based
-  variants (`rcw_compile_buffer()`, `rcw_decompile_buffer()`) take
-  already-preprocessed text and have no runtime dependency on gcc.
-  - TODO: drop the dependency on gcc
+- Meson, Ninja
+- [mcpp](http://mcpp.sourceforge.net/) (package: `libmcpp-dev`) - used
+  in-process as the C preprocessor for `.rcw` / `.rcwi` files
+- cmocka (package: `libcmocka-dev`) - for the unit tests only
+- pandoc - for generating the man page
 
 ## Build
 

@@ -10,6 +10,14 @@ project('libqoriq-rcw', 'c',
 inc = include_directories('include')
 src_inc = include_directories('src')
 
+# Locate libmcpp (Matsui C Preprocessor), used in-process by
+# rcw_preprocess.c instead of shelling out to gcc -E. Ubuntu/Debian
+# package: libmcpp-dev. libmcpp does not ship a pkg-config file,
+# so find it via the compiler.
+cc = meson.get_compiler('c')
+mcpp_dep = cc.find_library('mcpp', has_headers : ['mcpp_lib.h', 'mcpp_out.h'],
+  required : true)
+
 lib_sources = files(
   'src/rcw_context.c',
   'src/rcw_crc32.c',
@@ -24,6 +32,7 @@ lib_sources = files(
 
 libqoriq_rcw = library('qoriq-rcw', lib_sources,
   include_directories : [inc, src_inc],
+  dependencies : [mcpp_dep],
   install : true,
   version : meson.project_version())
 
@@ -37,7 +46,8 @@ install_headers('include/qoriq-rcw/rcw.h',
 pkg = import('pkgconfig')
 pkg.generate(libqoriq_rcw,
   name : 'libqoriq-rcw',
-  description : 'QorIQ Reset Configuration Word compiler library (RCW)')
+  description : 'QorIQ Reset Configuration Word compiler library (RCW)',
+  libraries_private : ['-lmcpp'])
 
 pandoc = find_program('pandoc', required : true)
 

@@ -92,7 +92,7 @@ These functions configure the context before compilation or decompilation.
 
 **rcw_compile_file**(*ctx*, *input_path*, *out_data*, *out_len*)
 :   Compile an RCW source file to a binary image. The file at *input_path* is
-    first run through the C preprocessor (**gcc -E**), then parsed and
+    first run through the C preprocessor (**mcpp**), then parsed and
     compiled. On success, *\*out_data* is set to a newly allocated buffer
     containing the binary, and *\*out_len* is set to its size in bytes. The
     caller must free the buffer with **rcw_free()**.
@@ -102,15 +102,15 @@ These functions configure the context before compilation or decompilation.
 
 **rcw_compile_buffer**(*ctx*, *preprocessed*, *len*, *out_data*, *out_len*)
 :   Like **rcw_compile_file()** but takes already-preprocessed source text
-    instead of a file path. No C preprocessor is invoked. This is useful for
-    embedding the library in environments where **gcc** is not available, or
-    for unit testing.
+    instead of a file path. No C preprocessor is invoked. This is useful
+    for embedding the library where the caller controls its own
+    preprocessing pipeline, or for unit testing.
 
 ## Reverse Decompilation
 
 **rcw_decompile_file**(*ctx*, *bin_path*, *rcwi_path*, *out_source*, *out_len*)
 :   Decompile a binary image back to RCW source text. The bitfield definition
-    file *rcwi_path* is preprocessed (via **gcc -E**) and parsed to obtain
+    file *rcwi_path* is preprocessed (via **mcpp**) and parsed to obtain
     symbol names and positions. Then the binary at *bin_path* is decoded:
     field values are extracted and PBI commands are disassembled. The output
     is prefixed with **#include <**basename(*rcwi_path*)**>**, so it can be
@@ -120,10 +120,10 @@ These functions configure the context before compilation or decompilation.
 
 **rcw_decompile_buffer**(*ctx*, *rcwi_preprocessed*, *rcwi_len*, *binary*, *binary_len*, *rcwi_name*, *out_source*, *out_len*)
 :   Like **rcw_decompile_file()** but takes already-preprocessed *.rcwi*
-    text and an in-memory binary buffer. No preprocessor is invoked and no
-    file I/O is performed. Useful for embedding the library in environments
-    where **gcc** is not available, or for unit testing. If *rcwi_name* is
-    non-NULL, the output is prefixed with
+    text and an in-memory binary buffer. No preprocessor is invoked and
+    no file I/O is performed - useful for embedding the library where
+    the caller controls preprocessing, or for unit testing. If
+    *rcwi_name* is non-NULL, the output is prefixed with
     **#include <***rcwi_name***>\\n\\n**; pass **NULL** to omit the header.
 
 ## Error Handling
@@ -188,7 +188,7 @@ then pasted between **.uboot** and **.end** in the source.
 :   File I/O error (open, read, or write failure).
 
 **RCW_ERR_PREPROCESS**
-:   The C preprocessor (**gcc -E**) returned a non-zero exit status.
+:   The C preprocessor (**mcpp**) returned a non-zero exit status.
     Preprocessing errors are printed to standard error.
 
 **RCW_ERR_PARSE**
@@ -305,8 +305,11 @@ if (err == RCW_OK) {
   **0x04C11DB7** and initial value **0xFFFFFFFF**. This is not compatible with
   the standard zlib **crc32()**.
 
-- **rcw_compile_file()** and **rcw_decompile_file()** require **gcc** to be
-  available in **PATH**. Use **rcw_compile_buffer()** to avoid this dependency.
+- **rcw_compile_file()** and **rcw_decompile_file()** use an embedded
+  copy of **mcpp**(1) for C preprocessing - no external toolchain is
+  required at runtime. The buffer-based variants
+  (**rcw_compile_buffer()**, **rcw_decompile_buffer()**) bypass
+  preprocessing entirely.
 
 - PBI command parameters support arithmetic expressions (**+ - \* & | << >>**)
   because the C preprocessor expands macros to expressions like
@@ -314,7 +317,7 @@ if (err == RCW_OK) {
 
 # SEE ALSO
 
-**qoriq-rcw**(1), **gcc**(1), **pkg-config**(1), **xxd**(1)
+**qoriq-rcw**(1), **mcpp**(1), **pkg-config**(1), **xxd**(1)
 
 # AUTHORS
 

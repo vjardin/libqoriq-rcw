@@ -2,138 +2,112 @@
  * SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2026 Free Mobile - Vincent Jardin
  *
- * C preprocessor wrapper - runs gcc -E on .rcw/.rcwi files.
- * TODO: stop using gcc -E since it cannot be used on a target without gcc
+ * C preprocessor wrapper - embeds mcpp (Matsui C Preprocessor) to
+ * expand #include / #define / #ifdef / #if in .rcw/.rcwi files.
+ *
+ * No fork/exec, no gcc at runtime: the whole preprocessor runs
+ * in-process via libmcpp, so the library works on targets that do
+ * not ship a toolchain.
+ *
+ * See http://mcpp.sourceforge.net/ - mcpp is BSD-2-Clause licensed
+ * and validated against the ISO C99/C11 preprocessor conformance tests.
  */
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <sys/wait.h>
-#include <unistd.h>
+
+#include <mcpp_lib.h>
+#include <mcpp_out.h>
 
 #include "rcw_internal.h"
 
+/*
+ * Build an argv for mcpp_lib_main():
+ *
+ *   mcpp -P -I . [-I path]... <input_path>
+ *
+ * -P  Suppress #line marker output.
+ * -I  Add a directory to the include search path.
+ *
+ * argv[0] is conventionally the program name. mcpp itself ignores it.
+ * Max argv slots: "mcpp" + "-P" + "-I" + "." + 2*N includes + input + NULL
+ *               =  1    +  1   +  1   +  1  + 2*N           +   1   +  1
+ *               =  6 + 2*N
+ */
+#define MCPP_ARGV_FIXED  6
+
 rcw_error_t
-rcw_preprocess(const rcw_ctx_t *ctx, const char *input_path, char **out, size_t *out_len) {
-  /*
-   * Build the command: gcc -E -x c -P -I . [-I path]... input_path
-   * Max args: "gcc" "-E" "-x" "c" "-P" "-I" "." + 2*N includes +
-   *           input_path + NULL
-   */
-  size_t max_args = 7 + 2 * ctx->include_path_count + 1 + 1;
-  const char **argv = calloc(max_args, sizeof(char *));
+rcw_preprocess(const rcw_ctx_t *ctx, const char *input_path,
+               char **out, size_t *out_len) {
+  size_t max_argv = MCPP_ARGV_FIXED + 2 * ctx->include_path_count;
+  char **argv = calloc(max_argv, sizeof(char *));
   if (!argv)
     return RCW_ERR_NOMEM;
 
-  size_t a = 0;
-  argv[a++] = "gcc";
-  argv[a++] = "-E";
-  argv[a++] = "-x";
-  argv[a++] = "c";
-  argv[a++] = "-P";
-  argv[a++] = "-I";
-  argv[a++] = ".";
+  int argc = 0;
+  argv[argc++] = (char *)"mcpp";
+  argv[argc++] = (char *)"-P";
+  argv[argc++] = (char *)"-I";
+  argv[argc++] = (char *)".";
 
   for (size_t i = 0; i < ctx->include_path_count; i++) {
-    argv[a++] = "-I";
-    argv[a++] = ctx->include_paths[i];
+    argv[argc++] = (char *)"-I";
+    argv[argc++] = ctx->include_paths[i];
   }
-  argv[a++] = input_path;
-  argv[a] = NULL;
+  argv[argc++] = (char *)input_path;
+  argv[argc]   = NULL;
 
-  /* Create pipes for stdout and stderr */
-  int stdout_pipe[2];
-  int stderr_pipe[2];
+  /*
+   * Ask mcpp to buffer output in memory instead of writing to fp_out /
+   * fp_err. The buffers are owned by mcpp; we strdup() what we need
+   * before returning since the caller will call mcpp_lib_main() again
+   * on the next preprocess invocation and that resets the buffers.
+   */
+  mcpp_use_mem_buffers(1);
 
-  if (pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0) {
-    free(argv);
-    return RCW_ERR_IO;
-  }
+  int rc = mcpp_lib_main(argc, argv);
 
-  pid_t pid = fork();
-  if (pid < 0) {
-    free(argv);
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[0]);
-    close(stderr_pipe[1]);
+  char *mcpp_out = mcpp_get_mem_buffer(OUT);
+  char *mcpp_err = mcpp_get_mem_buffer(ERR);
 
-    return RCW_ERR_IO;
-  }
+  /* Forward mcpp diagnostics to stderr (mirrors the gcc -E behavior) */
+  if (mcpp_err && *mcpp_err)
+    fprintf(stderr, "%s", mcpp_err);
 
-  if (pid == 0) {
-    /* Child */
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-    dup2(stdout_pipe[1], STDOUT_FILENO);
-    dup2(stderr_pipe[1], STDERR_FILENO);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
-    execvp("gcc", (char *const *)argv);
-    _exit(127);
-  }
-
-  /* Parent */
   free(argv);
-  close(stdout_pipe[1]);
-  close(stderr_pipe[1]);
 
-  /* Read stdout */
-  size_t cap = 64 * 1024;
-  size_t len = 0;
-  char *buf = malloc(cap);
-  if (!buf) {
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-    return RCW_ERR_NOMEM;
-  }
-
-  for (;;) {
-    if (len + 4096 > cap) {
-      cap *= 2;
-      char *p = realloc(buf, cap);
-      if (!p) {
-        free(buf);
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        return RCW_ERR_NOMEM;
-      }
-      buf = p;
-    }
-    ssize_t n = read(stdout_pipe[0], buf + len, cap - len);
-    if (n <= 0)
-      break;
-    len += (size_t)n;
-  }
-  close(stdout_pipe[0]);
-
-  /* Read stderr for error messages */
-  char errbuf[4096];
-  size_t errlen = 0;
-  for (;;) {
-    ssize_t n = read(stderr_pipe[0], errbuf + errlen, sizeof(errbuf) - errlen - 1);
-    if (n <= 0)
-      break;
-    errlen += (size_t)n;
-  }
-  close(stderr_pipe[0]);
-  errbuf[errlen] = '\0';
-
-  /* Wait for child */
-  int status;
-  waitpid(pid, &status, 0);
-
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    free(buf);
-    /* Print gcc errors to stderr like rcw.py does */
-    if (errlen > 0)
-      fprintf(stderr, "%s", errbuf);
+  if (rc != 0) {
+    /*
+     * mcpp_get_mem_buffer(OUT) is still owned by mcpp after a failed
+     * run; we do not free it here. The next mcpp_lib_main() call
+     * (if any) will reset the buffers.
+     */
     return RCW_ERR_PREPROCESS;
   }
+
+  if (!mcpp_out) {
+    /* No error but also no output - treat as empty input */
+    char *empty = malloc(1);
+    if (!empty)
+      return RCW_ERR_NOMEM;
+    empty[0] = '\0';
+    *out = empty;
+    *out_len = 0;
+    return RCW_OK;
+  }
+
+  /*
+   * Copy the mcpp output buffer to a caller-owned allocation so the
+   * caller can free it with free() / rcw_free() and so subsequent
+   * mcpp invocations on the same thread do not clobber it.
+   */
+  size_t len = strlen(mcpp_out);
+  char *buf = malloc(len + 1);
+  if (!buf)
+    return RCW_ERR_NOMEM;
+  memcpy(buf, mcpp_out, len + 1);
 
   *out = buf;
   *out_len = len;
