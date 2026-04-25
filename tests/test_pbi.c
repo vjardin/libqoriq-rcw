@@ -168,6 +168,42 @@ test_pbi_wait(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/* Test wait command at the field maximum: 0xFFFF must encode cleanly. */
+static void
+test_pbi_wait_max(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "wait 0xFFFF");
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->pbi.len, 4);
+  assert_int_equal(pbi_word(ctx, 0), 0x80820000 | 0xFFFF);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * Test wait command overflow: anything past 0xFFFF would silently
+ * corrupt the CMD field. The encoder must reject it instead.
+ */
+static void
+test_pbi_wait_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* 0x10000 is the first value that overflows. */
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "wait 0x10000");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  /* The historical nbxv3 footgun: wait 1000000 (0xF4240). */
+  err = rcw_pbi_encode_line(ctx, "wait 1000000");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  rcw_ctx_free(ctx);
+}
+
 /* Test blockcopy command */
 static void
 test_pbi_blockcopy(void **state) {
@@ -229,6 +265,8 @@ main(void) {
     cmocka_unit_test(test_pbi_awrite_b4),
     cmocka_unit_test(test_pbi_awrite_b5),
     cmocka_unit_test(test_pbi_wait),
+    cmocka_unit_test(test_pbi_wait_max),
+    cmocka_unit_test(test_pbi_wait_overflow),
     cmocka_unit_test(test_pbi_blockcopy),
     cmocka_unit_test(test_pbi_loadacwindow),
     cmocka_unit_test(test_pbi_poll),

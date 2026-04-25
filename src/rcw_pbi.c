@@ -393,6 +393,22 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       rcw_set_error(ctx, "\"wait\" requires 1 parameter: %s", line);
       return RCW_ERR_PBI_SYNTAX;
     }
+    /*
+     * The cycle count occupies bits [15:0] of the WAIT command word
+     * (LX2160A RM Table 45 "Wait Command Format": HDR=0x80, CMD=0x82,
+     * 16-bit operand). Larger values silently overflow into the CMD
+     * field on both libqoriq-rcw and rcw.py, producing an opcode the
+     * SP misinterprets (frequently it falls through to BOOTLOCPTR).
+     * Reject up front so the misencoding cannot reach a flashed PBL.
+     * Callers needing a longer delay should chain multiple waits.
+     */
+    if (params[0] > 0xFFFFu) {
+      rcw_set_error(ctx,
+          "\"wait\" operand 0x%x exceeds 16-bit field (max 0xFFFF); "
+          "chain multiple waits instead: %s",
+          params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
     return pbi_pack_word(ctx, PBL_CMD_WAIT | params[0]);
 
   } else if (strcmp(op, "poll") == 0) {
