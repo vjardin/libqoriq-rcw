@@ -286,6 +286,59 @@ test_uboot_line_too_long(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/*
+ * B6 - the pair header base is RCW_UBOOT_PAIR_BASE + (addr - 0x10).
+ * If the second line of a pair has addr < 0x10, the subtraction wraps
+ * on uint32_t and produces a nonsense header. Reject it explicitly.
+ */
+static void
+test_uboot_pair_addr_underflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* 4-line input -> all 4 are tail; pair 1 closes on line 2 (addr=0x05 < 0x10). */
+  static const char body[] =
+    "00000000: 0001 0203 0405 0607 0809 0a0b 0c0d 0e0f\n"
+    "00000005: 1011 1213 1415 1617 1819 1a1b 1c1d 1e1f\n"
+    "00000020: 2021 2223 2425 2627 2829 2a2b 2c2d 2e2f\n"
+    "00000030: 3031 3233 3435 3637 3839 3a3b 3c3d 3e3f\n";
+
+  rcw_error_t err = rcw_uboot_encode(ctx, body, strlen(body));
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * B6 - same, for the quad header base RCW_UBOOT_QUAD_BASE + (addr - 0x30).
+ * The 4th line of an 8-line input forms the quad; if its addr < 0x30,
+ * the subtraction wraps.
+ */
+static void
+test_uboot_quad_addr_underflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /*
+   * 8 lines: lines 1-4 form a quad; line 4 has addr=0x20 (< 0x30).
+   * Lines 5-8 are tail (would emit 2 pairs) but the quad fails first.
+   */
+  static const char body[] =
+    "00000000: 0001 0203 0405 0607 0809 0a0b 0c0d 0e0f\n"
+    "00000010: 1011 1213 1415 1617 1819 1a1b 1c1d 1e1f\n"
+    "00000018: 2021 2223 2425 2627 2829 2a2b 2c2d 2e2f\n"
+    "00000020: 3031 3233 3435 3637 3839 3a3b 3c3d 3e3f\n"
+    "00000040: 4041 4243 4445 4647 4849 4a4b 4c4d 4e4f\n"
+    "00000050: 5051 5253 5455 5657 5859 5a5b 5c5d 5e5f\n"
+    "00000060: 6061 6263 6465 6667 6869 6a6b 6c6d 6e6f\n"
+    "00000070: 7071 7273 7475 7677 7879 7a7b 7c7d 7e7f\n";
+
+  rcw_error_t err = rcw_uboot_encode(ctx, body, strlen(body));
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -297,6 +350,8 @@ main(void) {
     cmocka_unit_test(test_uboot_bad_address),
     cmocka_unit_test(test_uboot_truncated_line),
     cmocka_unit_test(test_uboot_line_too_long),
+    cmocka_unit_test(test_uboot_pair_addr_underflow),
+    cmocka_unit_test(test_uboot_quad_addr_underflow),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

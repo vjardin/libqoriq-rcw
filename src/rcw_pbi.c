@@ -7,12 +7,38 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
 #include "rcw_internal.h"
+
+/*
+ * Bounds for the address fields in PBI command words. Anything past
+ * these values OR-overflows into the command-type bits and silently
+ * corrupts the encoded command.
+ *
+ *   write/write.b1 : CCSR address [27:0]   (Section 8.3.2.1, Table 32)
+ *   awrite[.b3-b5] : AltConfig offset [25:0] (Section 8.3.2.2, Table 34)
+ *   loadacwindow   : ALTCFG_WNDW [13:0]    (Section 8.3.6,  Table 39)
+ *   blockcopy SRC  : interface byte [7:0]  (Section 8.3.3,  Table 36)
+ */
+#define PBI_CCSR_ADDR_MAX     0x0FFFFFFFu
+#define PBI_AWRITE_ADDR_MAX   0x03FFFFFFu
+#define PBI_ACWINDOW_MAX      0x00003FFFu
+#define PBI_BLOCKCOPY_SRC_MAX 0x000000FFu
+
+/*
+ * Maximum nesting depth of parens / unary ops in the expression
+ * evaluator. mcpp-expanded bitfield expressions never go past depth
+ * ~5 in real .rcw inputs; 64 is generous and bounds adversarial
+ * inputs like "((((...))))" that would otherwise blow the C stack.
+ */
+#define RCW_EVAL_MAX_DEPTH 64
 
 /*
  * Minimal recursive descent expression evaluator.
@@ -29,6 +55,7 @@ typedef struct {
   const char *pos;
   const char *end;
   rcw_error_t err;
+  int depth;
 } eval_state_t;
 
 static void
@@ -48,39 +75,40 @@ eval_primary(eval_state_t *st) {
     return 0;
   }
 
-  /* Parenthesized expression */
+  if (++st->depth > RCW_EVAL_MAX_DEPTH) {
+    st->err = RCW_ERR_PBI_SYNTAX;
+    --st->depth;
+    return 0;
+  }
+
+  uint32_t result = 0;
+
   if (*st->pos == '(') {
     st->pos++;
-    uint32_t v = eval_expr(st);
+    result = eval_expr(st);
     skip_ws(st);
     if (st->pos < st->end && *st->pos == ')')
       st->pos++;
-    return v;
-  }
-
-  /* Unary minus */
-  if (*st->pos == '-') {
+  } else if (*st->pos == '-') {
     st->pos++;
-    return (uint32_t)(-(int32_t)eval_primary(st));
-  }
-
-  /* Bitwise NOT */
-  if (*st->pos == '~') {
+    result = (uint32_t)(-(int32_t)eval_primary(st));
+  } else if (*st->pos == '~') {
     st->pos++;
-    return ~eval_primary(st);
-  }
-
-  /* Number literal */
-  if (isdigit((unsigned char)*st->pos)) {
+    result = ~eval_primary(st);
+  } else if (isdigit((unsigned char)*st->pos)) {
     char *endptr;
-    uint32_t v = (uint32_t)strtoul(st->pos, &endptr, 0);
+    errno = 0;
+    unsigned long uv = strtoul(st->pos, &endptr, 0);
+    if (errno == ERANGE || uv > UINT32_MAX)
+      st->err = RCW_ERR_PBI_SYNTAX;
     st->pos = endptr;
-    return v;
+    result = (uint32_t)uv;
+  } else {
+    st->err = RCW_ERR_PBI_SYNTAX;
   }
 
-  st->err = RCW_ERR_PBI_SYNTAX;
-
-  return 0;
+  --st->depth;
+  return result;
 }
 
 static uint32_t
@@ -138,11 +166,13 @@ eval_shift(eval_state_t *st) {
     if (st->pos + 1 < st->end && st->pos[0] == '<' &&
         st->pos[1] == '<') {
       st->pos += 2;
-      v <<= eval_add(st);
+      uint32_t cnt = eval_add(st);
+      v = (cnt >= 32) ? 0u : (v << cnt);
     } else if (st->pos + 1 < st->end && st->pos[0] == '>' &&
                st->pos[1] == '>') {
       st->pos += 2;
-      v >>= eval_add(st);
+      uint32_t cnt = eval_add(st);
+      v = (cnt >= 32) ? 0u : (v >> cnt);
     } else {
       break;
     }
@@ -210,6 +240,7 @@ rcw_eval_expr(const char *expr, uint32_t *result) {
     .pos = expr,
     .end = expr + strlen(expr),
     .err = RCW_OK,
+    .depth = 0,
   };
 
   *result = eval_expr(&st);
@@ -283,10 +314,23 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
 
   /* Parse comma-separated parameters */
   if (*p) {
-    snprintf(params_str, sizeof(params_str), "%s", p);
+    int n = snprintf(params_str, sizeof(params_str), "%s", p);
+    if (n < 0 || (size_t)n >= sizeof(params_str)) {
+      rcw_set_error(ctx,
+          "PBI parameter list too long (max %zu bytes): %s",
+          sizeof(params_str) - 1, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
     char *tok = params_str;
 
-    while (tok && *tok && nparam < PBI_MAX_PARAMS) {
+    while (tok && *tok) {
+      if (nparam >= PBI_MAX_PARAMS) {
+        rcw_set_error(ctx,
+            "Too many PBI parameters (max %d): %s",
+            PBI_MAX_PARAMS, line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+
       char *comma = NULL;
       int depth = 0;
 
@@ -326,6 +370,14 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       rcw_set_error(ctx, "\"write\" requires 2 parameters: %s", line);
       return RCW_ERR_PBI_SYNTAX;
     }
+    if (params[0] > PBI_CCSR_ADDR_MAX) {
+      rcw_set_error(ctx,
+          "\"write\" address 0x%x exceeds 28-bit CCSR field "
+          "(max 0x%x); upper bits would corrupt the byte-count "
+          "field: %s",
+          params[0], PBI_CCSR_ADDR_MAX, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
     uint32_t opsizebytes = PBI_WRITE_4BYTE;
     if (strcmp(suffix, "b1") == 0)
       opsizebytes = PBI_WRITE_1BYTE;
@@ -340,6 +392,13 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       if (nparam < 5) {
         rcw_set_error(ctx,
             "\"awrite.b5\" requires 5 parameters: %s", line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+      if (params[0] > PBI_AWRITE_ADDR_MAX) {
+        rcw_set_error(ctx,
+            "\"awrite.b5\" address 0x%x exceeds 26-bit field "
+            "(max 0x%x): %s",
+            params[0], PBI_AWRITE_ADDR_MAX, line);
         return RCW_ERR_PBI_SYNTAX;
       }
       err = pbi_pack_word(ctx,
@@ -361,6 +420,13 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
             "\"awrite.b4\" requires 3 parameters: %s", line);
         return RCW_ERR_PBI_SYNTAX;
       }
+      if (params[0] > PBI_AWRITE_ADDR_MAX) {
+        rcw_set_error(ctx,
+            "\"awrite.b4\" address 0x%x exceeds 26-bit field "
+            "(max 0x%x): %s",
+            params[0], PBI_AWRITE_ADDR_MAX, line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
       err = pbi_pack_word(ctx,
           PBL_CMD_GENERAL |
           ((uint32_t)PBI_AWRITE_B4 << PBI_AWRITE_B_SHIFT) |
@@ -377,6 +443,13 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       if (nparam < 2) {
         rcw_set_error(ctx,
             "\"awrite\" requires 2 parameters: %s", line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+      if (params[0] > PBI_AWRITE_ADDR_MAX) {
+        rcw_set_error(ctx,
+            "\"awrite\" address 0x%x exceeds 26-bit field "
+            "(max 0x%x): %s",
+            params[0], PBI_AWRITE_ADDR_MAX, line);
         return RCW_ERR_PBI_SYNTAX;
       }
       err = pbi_pack_word(ctx,
@@ -433,7 +506,14 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
           "\"blockcopy\" requires 4 parameters: %s", line);
       return RCW_ERR_PBI_SYNTAX;
     }
-    err = pbi_pack_word(ctx, PBL_CMD_BLOCKCOPY | (params[0] & 0xFF));
+    if (params[0] > PBI_BLOCKCOPY_SRC_MAX) {
+      rcw_set_error(ctx,
+          "\"blockcopy\" SRC 0x%x exceeds 8-bit interface field "
+          "(max 0x%x): %s",
+          params[0], PBI_BLOCKCOPY_SRC_MAX, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx, PBL_CMD_BLOCKCOPY | params[0]);
     if (err != RCW_OK)
       return err;
     for (int i = 1; i < 4; i++) {
@@ -447,6 +527,13 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     if (nparam < 1) {
       rcw_set_error(ctx,
           "\"loadacwindow\" requires 1 parameter: %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[0] > PBI_ACWINDOW_MAX) {
+      rcw_set_error(ctx,
+          "\"loadacwindow\" 0x%x exceeds 14-bit field "
+          "(max 0x%x); upper bits would corrupt the CMD byte: %s",
+          params[0], PBI_ACWINDOW_MAX, line);
       return RCW_ERR_PBI_SYNTAX;
     }
     return pbi_pack_word(ctx, PBL_CMD_LOADACWINDOW | params[0]);

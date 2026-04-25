@@ -277,6 +277,183 @@ test_parse_dup_assign_silent_when_disabled(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/*
+ * A1 - bitfield position must fit in the 1024-bit RCW.
+ *
+ * Without the bound check, FOO[2000:2000]=1 reaches set_bits() with
+ * bytepos=250 and writes byte 250 of the 128-byte stack buffer in
+ * rcw_bits_pack(). Confirmed under ASan to corrupt the saved return
+ * address. Parser must drop the definition (no symbol added) and the
+ * downstream assignment must fall through as "Unknown bitfield".
+ */
+static void
+test_parse_bitpos_oob_range(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[2000:2000]\n"
+    "FOO=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  char buf[256];
+  rcw_error_t err = RCW_OK;
+  CAPTURE_STDERR(buf, sizeof(buf), {
+    err = rcw_parse(ctx, src, strlen(src));
+  });
+
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 0);
+  /* Assignment to the dropped symbol must report unknown */
+  assert_non_null(strstr(buf, "Unknown bitfield"));
+
+  rcw_ctx_free(ctx);
+}
+
+/* A1 - upper edge: 1024 is one past the last legal position. */
+static void
+test_parse_bitpos_just_over_max(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[1024]\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 0);
+
+  rcw_ctx_free(ctx);
+}
+
+/* A1 - exact maximum (1023) is accepted. */
+static void
+test_parse_bitpos_max_accepted(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "TOPBIT[1023]\n"
+    "TOPBIT=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 1);
+  assert_true(ctx->symbols.entries[0].has_value);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * A1 - negative literal. strtoul("-1") wraps to ULONG_MAX which casts
+ * to int=-1. set_bits would then write buf[-1]. The parser must
+ * reject the leading '-'.
+ */
+static void
+test_parse_bitpos_negative(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[-1:0]\n"
+    "FOO=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 0);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * B3 - assignment value with strtoull overflow. The value field is
+ * uint64_t and must be rejected when the literal does not fit (or
+ * has trailing garbage / leading minus).
+ */
+static void
+test_parse_value_overflow(void **state) {
+  (void)state;
+  /* ULLONG_MAX + 1 forces ERANGE on strtoull. */
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[7:0]\n"
+    "FOO=99999999999999999999999\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  /* Symbol exists but assignment was rejected */
+  assert_int_equal(ctx->symbols.count, 1);
+  assert_false(ctx->symbols.entries[0].has_value);
+
+  rcw_ctx_free(ctx);
+}
+
+/* B3 - negative assignment must be rejected (bitfield is unsigned). */
+static void
+test_parse_value_negative(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[7:0]\n"
+    "FOO=-1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 1);
+  assert_false(ctx->symbols.entries[0].has_value);
+
+  rcw_ctx_free(ctx);
+}
+
+/* B3 - trailing garbage in value (e.g. "1abc") must be rejected. */
+static void
+test_parse_value_trailing_garbage(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[7:0]\n"
+    "FOO=42xyz\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_false(ctx->symbols.entries[0].has_value);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * B5 - bitfield names that would otherwise truncate inside sym->name
+ * (RCW_FIELD_NAME_MAX = 64) must be rejected. Otherwise two distinct
+ * 70-char names sharing a 63-char prefix become aliases of each other,
+ * defeating duplicate detection.
+ */
+static void
+test_parse_name_too_long(void **state) {
+  (void)state;
+  /* 80-character name */
+  char src[256];
+  snprintf(src, sizeof(src),
+           "%%size=1024\n"
+           "%%pbiformat=2\n"
+           "%-80s[7:0]\n", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  rcw_error_t err = rcw_parse(ctx, src, strlen(src));
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->symbols.count, 0);
+
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -289,6 +466,14 @@ main(void) {
     cmocka_unit_test(test_parse_whitespace),
     cmocka_unit_test(test_parse_dup_assign_warns_when_enabled),
     cmocka_unit_test(test_parse_dup_assign_silent_when_disabled),
+    cmocka_unit_test(test_parse_bitpos_oob_range),
+    cmocka_unit_test(test_parse_bitpos_just_over_max),
+    cmocka_unit_test(test_parse_bitpos_max_accepted),
+    cmocka_unit_test(test_parse_bitpos_negative),
+    cmocka_unit_test(test_parse_value_overflow),
+    cmocka_unit_test(test_parse_value_negative),
+    cmocka_unit_test(test_parse_value_trailing_garbage),
+    cmocka_unit_test(test_parse_name_too_long),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

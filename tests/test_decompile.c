@@ -443,6 +443,119 @@ test_preprocess_file_roundtrip(void **state) {
  * routes everything else through the buffer APIs.
  */
 
+/*
+ * A2 - the disassembler used to round pbi_len up to a multiple of 4
+ * and then read 4 bytes per word, over-reading up to 3 bytes past
+ * the heap allocation when pbi_len was not aligned. We exercise the
+ * unaligned path under the address sanitizer (it traps any OOB read).
+ */
+static void
+test_decompile_unaligned_pbi_no_oob(void **state) {
+  (void)state;
+
+  /*
+   * Construct a binary with a valid 128-byte RCW preceded by an 8-byte
+   * PBL header and 4-byte checksum, then a PBI section that ends in
+   * a 1-byte tail (so total PBI region is 5 bytes, not a multiple of 4).
+   *
+   *   binary layout:
+   *     [0..3]   preamble  (LE)
+   *     [4..7]   load RCW cmd (LE)
+   *     [8..135] RCW (zeroed)
+   *     [136..139] checksum (zero)
+   *     [140..144] PBI: 1 valid 4-byte word + 1 dangling byte
+   */
+  uint8_t bin[145] = {0};
+  /* preamble */
+  bin[0] = 0x55; bin[1] = 0xAA; bin[2] = 0x55; bin[3] = 0xAA;
+  /* load-RCW cmd 0x80100000 LE */
+  bin[4] = 0x00; bin[5] = 0x00; bin[6] = 0x10; bin[7] = 0x80;
+  /* PBI word 0 = a valid Stop command 0x80FF0000 LE */
+  bin[140] = 0x00; bin[141] = 0x00; bin[142] = 0xFF; bin[143] = 0x80;
+  /* trailing dangling byte at [144] */
+  bin[144] = 0xAA;
+
+  /* Minimal rcwi - no fields needed, just the meta vars. */
+  static const char rcwi[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%littleendian=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  char *out = NULL;
+  size_t out_len = 0;
+  /*
+   * Pre-fix: this would over-read 3 bytes past the buffer end. ASan
+   * would trap; without ASan the call would return RCW_OK with
+   * garbage trailing bytes from the heap.
+   * Post-fix: stops at the last full word, returns OK cleanly.
+   */
+  rcw_error_t err = rcw_decompile_buffer(ctx,
+                                         rcwi, strlen(rcwi),
+                                         bin, sizeof(bin),
+                                         NULL,
+                                         &out, &out_len);
+  assert_int_equal(err, RCW_OK);
+  assert_non_null(out);
+  /* We should have disassembled the Stop command and stopped there. */
+  assert_non_null(strstr(out, "Stop command"));
+
+  rcw_free(out);
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * A3 - a buffer that starts with the PBL preamble but is shorter
+ * than the minimum 140 bytes (preamble+cmd+RCW+checksum) used to
+ * trigger an OOB read of up to 7 bytes past the buffer when
+ * rcw_bits_extract() pulled 128 bytes from binary+8.
+ *
+ * Now: detected as no-preamble, falls into the short-buffer branch
+ * and returns RCW_ERR_BAD_BINARY (no field extraction attempted).
+ */
+static void
+test_decompile_short_preamble_no_oob(void **state) {
+  (void)state;
+
+  /* 130 bytes: preamble + load-cmd + only 122 bytes of "RCW" -> too short. */
+  uint8_t bin[130] = {0};
+  bin[0] = 0x55; bin[1] = 0xAA; bin[2] = 0x55; bin[3] = 0xAA;
+  bin[4] = 0x00; bin[5] = 0x00; bin[6] = 0x10; bin[7] = 0x80;
+
+  static const char rcwi[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%littleendian=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  char *out = NULL;
+  size_t out_len = 0;
+  rcw_error_t err = rcw_decompile_buffer(ctx,
+                                         rcwi, strlen(rcwi),
+                                         bin, sizeof(bin),
+                                         NULL,
+                                         &out, &out_len);
+  /*
+   * 130 bytes is below the 140-byte PBL minimum, so we ignore the
+   * preamble bytes and go down the no-preamble branch. That branch
+   * needs >= 128 bytes of RCW; 130 is fine, so decompile succeeds
+   * but treats the buffer as raw RCW.
+   */
+  assert_int_equal(err, RCW_OK);
+  rcw_free(out);
+
+  /* And a buffer truly shorter than RCW_SIZE_BYTES is rejected. */
+  out = NULL;
+  err = rcw_decompile_buffer(ctx,
+                             rcwi, strlen(rcwi),
+                             bin, 64, /* well under 128 */
+                             NULL,
+                             &out, &out_len);
+  assert_int_equal(err, RCW_ERR_BAD_BINARY);
+
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -452,6 +565,8 @@ main(void) {
     cmocka_unit_test(test_decompile_buffer_no_header),
     cmocka_unit_test(test_decompile_buffer_roundtrip),
     cmocka_unit_test(test_preprocess_file_roundtrip),
+    cmocka_unit_test(test_decompile_unaligned_pbi_no_oob),
+    cmocka_unit_test(test_decompile_short_preamble_no_oob),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

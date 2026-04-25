@@ -199,6 +199,12 @@ rcw_uboot_encode(rcw_ctx_t *ctx, const char *body, size_t len) {
                      (cnt > nlines - RCW_UBOOT_TAIL_LINES);
 
     if (last_tail && (cnt % RCW_UBOOT_PAIR_LINES == 0)) {
+      if (addr < 0x10u) {
+        rcw_set_error(ctx,
+            ".uboot pair-line address 0x%x below 0x10 "
+            "(would underflow header base)", addr);
+        return RCW_ERR_PBI_SYNTAX;
+      }
       uint32_t hdr = RCW_UBOOT_PAIR_BASE + (addr - 0x10);
       err = ub_pack_be32(ctx, hdr);
       if (err != RCW_OK)
@@ -213,6 +219,12 @@ rcw_uboot_encode(rcw_ctx_t *ctx, const char *body, size_t len) {
       buf_cnt = 0;
 
     } else if (cnt % RCW_UBOOT_QUAD_LINES == 0) {
+      if (addr < 0x30u) {
+        rcw_set_error(ctx,
+            ".uboot quad-line address 0x%x below 0x30 "
+            "(would underflow header base)", addr);
+        return RCW_ERR_PBI_SYNTAX;
+      }
       uint32_t hdr = RCW_UBOOT_QUAD_BASE + (addr - 0x30);
       err = ub_pack_be32(ctx, hdr);
       if (err != RCW_OK)

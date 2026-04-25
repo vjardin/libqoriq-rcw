@@ -83,17 +83,17 @@ typedef uint32_t (*unpack_fn)(const uint8_t *p);
 /*
  * Disassemble PBI commands in a binary PBI section.
  * Matches rcw.py lines 909-1043 for pbiformat=2.
+ *
+ * All bounds checks compare against the real pbi_len (not a rounded-
+ * up version). Trailing bytes that don't form a full 4-byte word are
+ * silently ignored - rather than read out-of-bounds.
  */
 static rcw_error_t
 disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
                 size_t pbi_len, unpack_fn unpack) {
   size_t i = 0;
-  /* Pad to 4-byte boundary */
-  size_t len = (pbi_len + 3) & ~(size_t)3;
 
-  while (i < len) {
-    if (i + 4 > pbi_len + 3)
-      break;
+  while (i + 4 <= pbi_len) {
     uint32_t word = unpack(pbi + i);
     i += 4;
 
@@ -103,7 +103,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       /* General command */
       uint8_t cmd = (uint8_t)((word & PBI_CMD_MASK) >> PBI_CMD_SHIFT);
 
-      if (cmd == PBI_GENCMD_BLOCKCOPY && i + 12 <= len) {
+      if (cmd == PBI_GENCMD_BLOCKCOPY && i + 12 <= pbi_len) {
         /* blockcopy */
         uint32_t a1 = unpack(pbi + i); i += 4;
         uint32_t a2 = unpack(pbi + i); i += 4;
@@ -113,18 +113,18 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       } else if (cmd == PBI_GENCMD_LOADACWINDOW) {
         strbuf_printf(sb, "loadacwindow 0x%08x\n", word & 0x3FFF);
 
-      } else if (cmd == PBI_GENCMD_LOADCONDITION && i + 8 <= len) {
+      } else if (cmd == PBI_GENCMD_LOADCONDITION && i + 8 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
         uint32_t a2 = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "loadcondition 0x%08x,0x%08x\n", a1, a2);
 
-      } else if (cmd == PBI_GENCMD_POLL_SHORT && i + 12 <= len) {
+      } else if (cmd == PBI_GENCMD_POLL_SHORT && i + 12 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
         uint32_t a2 = unpack(pbi + i); i += 4;
         uint32_t a3 = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "poll.short 0x%08x,0x%08x,0x%08x\n", a1, a2, a3);
 
-      } else if (cmd == PBI_GENCMD_POLL_LONG && i + 12 <= len) {
+      } else if (cmd == PBI_GENCMD_POLL_LONG && i + 12 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
         uint32_t a2 = unpack(pbi + i); i += 4;
         uint32_t a3 = unpack(pbi + i); i += 4;
@@ -133,12 +133,13 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       } else if (cmd == PBI_GENCMD_WAIT) {
         strbuf_printf(sb, "wait 0x%08x\n", word & 0xFFFF);
 
-      } else if (cmd == PBI_GENCMD_CRC_STOP && i + 4 <= len) {
+      } else if (cmd == PBI_GENCMD_CRC_STOP && i + 4 <= pbi_len) {
         uint32_t crc = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "/* CRC and Stop command (CRC 0x%08x)*/\n", crc);
 
       } else if (cmd == PBI_GENCMD_STOP) {
-        i += 4;
+        if (i + 4 <= pbi_len)
+          i += 4;
         strbuf_printf(sb, "/* Stop command */\n");
 
       } else if (cmd == PBI_GENCMD_LOAD_RCW_CS ||
@@ -157,11 +158,11 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
     } else if ((hdr & 0xC0) == 0x00) {
       /* CCSR write */
       uint8_t cmd = (hdr & PBI_CCSR_TYPE_MASK) >> PBI_CCSR_TYPE_SHIFT;
-      if (cmd == PBI_CCSR_WRITE_B1 && i + 4 <= len) {
+      if (cmd == PBI_CCSR_WRITE_B1 && i + 4 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "write.b1 0x%08x,0x%08x\n", word & PBI_CCSR_ADDR_MASK, a1);
 
-      } else if (cmd == PBI_CCSR_WRITE_B4 && i + 4 <= len) {
+      } else if (cmd == PBI_CCSR_WRITE_B4 && i + 4 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "write 0x%08x,0x%08x\n", word & PBI_CCSR_ADDR_MASK, a1);
 
@@ -176,7 +177,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       if (bcnt) {
         strbuf_printf(sb, "awrite 0x%08x", word & PBI_AWRITE_ADDR_MASK);
         for (uint32_t j = 0;
-             j < (1u << (bcnt - 1)) && i + 4 <= len;
+             j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
              j += 4) {
           uint32_t a1 = unpack(pbi + i);
           i += 4;
@@ -226,7 +227,14 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
 
   }
 
-  if (len > RCW_SIZE_BYTES && memcmp(binary, preamble_bytes, 4) == 0) {
+  /*
+   * Need at least preamble(4) + load-cmd(4) + RCW(128) + checksum(4)
+   * = 140 bytes before we can treat the buffer as PBL-wrapped. The
+   * older check (len > RCW_SIZE_BYTES) accepted any 129+-byte input
+   * starting with the preamble, which then over-read the RCW area.
+   */
+  size_t pbl_min = 4 + 4 + RCW_SIZE_BYTES + 4;
+  if (len >= pbl_min && memcmp(binary, preamble_bytes, 4) == 0) {
     /* Has preamble: skip 8 bytes (preamble + load RCW cmd) */
     rcw_data = binary + 8;
     /* Skip checksum (4 bytes after RCW) */
@@ -237,6 +245,15 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
     }
 
   } else {
+    /*
+     * No preamble: the whole buffer is the raw 128-byte RCW. Anything
+     * shorter cannot be decoded - rcw_bits_extract reads exactly
+     * RCW_SIZE_BYTES from rcw_data.
+     */
+    if (len < RCW_SIZE_BYTES) {
+      free(sb.data);
+      return RCW_ERR_BAD_BINARY;
+    }
     rcw_data = binary;
   }
 

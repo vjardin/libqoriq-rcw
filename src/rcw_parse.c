@@ -7,12 +7,77 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
 #include "rcw_internal.h"
+
+/*
+ * Parse a non-negative integer position that must fit inside the
+ * 1024-bit RCW. Used for NAME[begin:end] / NAME[pos] declarations.
+ *
+ * Rejects:
+ *   - leading '-' (no negative bit positions)
+ *   - empty input or trailing garbage after the digits
+ *   - strtoul ERANGE
+ *   - value >= RCW_SIZE_BITS
+ *
+ * Without this, "FOO[2000:2000]" reaches set_bits() with bytepos=250
+ * and writes past the 128-byte stack buffer.
+ */
+static rcw_error_t
+parse_bitpos(const char *s, int *out) {
+  if (!s || !*s)
+    return RCW_ERR_PARSE;
+  if (*s == '-')
+    return RCW_ERR_PARSE;
+
+  errno = 0;
+  char *endptr;
+  unsigned long v = strtoul(s, &endptr, 0);
+  if (endptr == s || *endptr != '\0')
+    return RCW_ERR_PARSE;
+  if (errno == ERANGE)
+    return RCW_ERR_PARSE;
+  if (v >= (unsigned long)RCW_SIZE_BITS)
+    return RCW_ERR_PARSE;
+
+  *out = (int)v;
+  return RCW_OK;
+}
+
+/*
+ * Parse an unsigned 64-bit value for NAME=value.
+ *
+ * Rejects:
+ *   - leading '-' (assignment is to an unsigned bitfield)
+ *   - empty input or trailing garbage
+ *   - strtoull ERANGE
+ *
+ * Width vs. field check happens later in rcw_bits_pack().
+ */
+static rcw_error_t
+parse_field_value(const char *s, uint64_t *out) {
+  if (!s || !*s)
+    return RCW_ERR_PARSE;
+  if (*s == '-')
+    return RCW_ERR_PARSE;
+
+  errno = 0;
+  char *endptr;
+  unsigned long long v = strtoull(s, &endptr, 0);
+  if (endptr == s || *endptr != '\0')
+    return RCW_ERR_PARSE;
+  if (errno == ERANGE)
+    return RCW_ERR_PARSE;
+
+  *out = (uint64_t)v;
+  return RCW_OK;
+}
 
 /* Find a symbol by name, return index or -1. */
 static int
@@ -308,61 +373,73 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
       }
       *endbr = '\0';
 
+      /*
+       * Reject names that would silently truncate inside sym->name.
+       * Truncation could otherwise alias two long names sharing a
+       * 63-char prefix, defeating duplicate detection.
+       */
+      if (strlen(name) >= RCW_FIELD_NAME_MAX) {
+        rcw_set_error(ctx,
+            "Bitfield name too long (max %d): %.40s...",
+            RCW_FIELD_NAME_MAX - 1, name);
+        free(line);
+        if (ctx->warnings)
+          fprintf(stderr, "%s\n", ctx->error_detail);
+        p = eol + 1;
+        continue;
+      }
+
       char *colon = strchr(range, ':');
+      int begin, endpos;
       if (colon) {
         /* NAME[begin:end] */
         *colon = '\0';
-        int begin = (int)strtoul(range, NULL, 0);
-        int endpos = (int)strtoul(colon + 1, NULL, 0);
-
-        rcw_error_t err = check_overlap(ctx, name, begin, endpos);
-        if (err != RCW_OK) {
+        if (parse_bitpos(range, &begin) != RCW_OK ||
+            parse_bitpos(colon + 1, &endpos) != RCW_OK) {
+          rcw_set_error(ctx,
+              "Bitfield %s: bit position out of range "
+              "(must be 0..%d)", name, RCW_SIZE_BITS - 1);
           free(line);
-          /* Warn but continue, like rcw.py */
           if (ctx->warnings)
             fprintf(stderr, "%s\n", ctx->error_detail);
           p = eol + 1;
-
           continue;
         }
-
-        if (ctx->symbols.count >= RCW_MAX_SYMBOLS) {
-          free(line);
-
-          return RCW_ERR_NOMEM;
-        }
-
-        rcw_symbol_t *sym = &ctx->symbols.entries[ctx->symbols.count++];
-        snprintf(sym->name, RCW_FIELD_NAME_MAX, "%s", name);
-        sym->begin = begin;
-        sym->end = endpos;
-        sym->has_value = false;
-
       } else {
         /* NAME[pos] (single bit) */
-        int pos = (int)strtoul(range, NULL, 0);
-
-        rcw_error_t err = check_overlap(ctx, name, pos, pos);
-        if (err != RCW_OK) {
+        if (parse_bitpos(range, &begin) != RCW_OK) {
+          rcw_set_error(ctx,
+              "Bitfield %s: bit position out of range "
+              "(must be 0..%d)", name, RCW_SIZE_BITS - 1);
           free(line);
           if (ctx->warnings)
             fprintf(stderr, "%s\n", ctx->error_detail);
           p = eol + 1;
-
           continue;
         }
-
-        if (ctx->symbols.count >= RCW_MAX_SYMBOLS) {
-          free(line);
-          return RCW_ERR_NOMEM;
-        }
-
-        rcw_symbol_t *sym = &ctx->symbols.entries[ctx->symbols.count++];
-        snprintf(sym->name, RCW_FIELD_NAME_MAX, "%s", name);
-        sym->begin = pos;
-        sym->end = pos;
-        sym->has_value = false;
+        endpos = begin;
       }
+
+      rcw_error_t err = check_overlap(ctx, name, begin, endpos);
+      if (err != RCW_OK) {
+        free(line);
+        /* Warn but continue, like rcw.py */
+        if (ctx->warnings)
+          fprintf(stderr, "%s\n", ctx->error_detail);
+        p = eol + 1;
+        continue;
+      }
+
+      if (ctx->symbols.count >= RCW_MAX_SYMBOLS) {
+        free(line);
+        return RCW_ERR_NOMEM;
+      }
+
+      rcw_symbol_t *sym = &ctx->symbols.entries[ctx->symbols.count++];
+      snprintf(sym->name, RCW_FIELD_NAME_MAX, "%s", name);
+      sym->begin = begin;
+      sym->end = endpos;
+      sym->has_value = false;
       free(line);
       p = eol + 1;
 
@@ -389,8 +466,18 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
       if (ctx->warnings && ctx->symbols.entries[idx].has_value)
         fprintf(stderr, "Warning: Duplicate assignment for " "bitfield %s\n", name);
 
+      uint64_t v;
+      if (parse_field_value(valstr, &v) != RCW_OK) {
+        rcw_set_error(ctx, "Invalid value for %s: %s", name, valstr);
+        if (ctx->warnings)
+          fprintf(stderr, "%s\n", ctx->error_detail);
+        free(line);
+        p = eol + 1;
+        continue;
+      }
+
       ctx->symbols.entries[idx].has_value = true;
-      ctx->symbols.entries[idx].value = strtoull(valstr, NULL, 0);
+      ctx->symbols.entries[idx].value = v;
 
       free(line);
       p = eol + 1;

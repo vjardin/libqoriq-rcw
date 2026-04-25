@@ -254,6 +254,198 @@ test_pbi_poll(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/*
+ * A4 - the parens-only "((((...))))" pattern would blow the C stack
+ * via unbounded recursion in eval_primary. The evaluator must hit
+ * the depth cap and return RCW_ERR_PBI_SYNTAX cleanly.
+ */
+static void
+test_eval_recursion_capped(void **state) {
+  (void)state;
+  /* 200 nested '(' - well past the 64-deep cap. */
+  char expr[512];
+  for (int i = 0; i < 200; i++)
+    expr[i] = '(';
+  expr[200] = '1';
+  for (int i = 201; i < 401; i++)
+    expr[i] = ')';
+  expr[401] = '\0';
+
+  uint32_t r;
+  rcw_error_t err = rcw_eval_expr(expr, &r);
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+}
+
+/*
+ * A5 - shifts with count >= 32 are C undefined behavior on uint32_t.
+ * The evaluator must clamp them (we use "result = 0").
+ */
+static void
+test_eval_shift_count_overflow(void **state) {
+  (void)state;
+  uint32_t r;
+
+  /* 1 << 32 - UB on a uint32_t; clamp to 0 instead */
+  assert_int_equal(rcw_eval_expr("1 << 32", &r), RCW_OK);
+  assert_int_equal(r, 0);
+
+  /* 0xFFFFFFFF >> 32 - same issue, clamp to 0 */
+  assert_int_equal(rcw_eval_expr("0xFFFFFFFF >> 32", &r), RCW_OK);
+  assert_int_equal(r, 0);
+
+  /* Sanity: legal shifts still work */
+  assert_int_equal(rcw_eval_expr("1 << 31", &r), RCW_OK);
+  assert_int_equal(r, 0x80000000u);
+  assert_int_equal(rcw_eval_expr("0xFFFFFFFF >> 31", &r), RCW_OK);
+  assert_int_equal(r, 1);
+}
+
+/*
+ * B2 - integer literal that does not fit in uint32_t (e.g.
+ * 0x100000000) must be rejected, not silently truncated.
+ */
+static void
+test_eval_numeric_literal_overflow(void **state) {
+  (void)state;
+  uint32_t r;
+
+  rcw_error_t err = rcw_eval_expr("0x100000000", &r);
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+
+  /* UINT32_MAX still works */
+  assert_int_equal(rcw_eval_expr("0xFFFFFFFF", &r), RCW_OK);
+  assert_int_equal(r, 0xFFFFFFFFu);
+}
+
+/*
+ * B1 - addresses that exceed the per-command field width OR-overflow
+ * into the command-type bits and silently corrupt the encoded
+ * command. Each opcode must reject upfront.
+ */
+static void
+test_pbi_write_addr_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* CCSR address field is [27:0]; 0x10000000 sets bit 28 and
+   * silently changes the byte-count field from B=3 to B=2 (RESERVED). */
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "write 0x10000000,0xCAFE");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  /* And the upper-bound address is still accepted. */
+  err = rcw_pbi_encode_line(ctx, "write 0x0FFFFFFF,0xCAFE");
+  assert_int_equal(err, RCW_OK);
+
+  rcw_ctx_free(ctx);
+}
+
+static void
+test_pbi_write_b1_addr_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "write.b1 0x10000000,0xff");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  rcw_ctx_free(ctx);
+}
+
+static void
+test_pbi_awrite_addr_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* AltConfig offset field is [25:0]; 0x4000000 corrupts B-field. */
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "awrite 0x4000000,0");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+
+  err = rcw_pbi_encode_line(ctx, "awrite.b4 0x4000000,0,0");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+
+  err = rcw_pbi_encode_line(ctx, "awrite.b5 0x4000000,0,0,0,0");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  /* Upper-bound address still encodes. */
+  err = rcw_pbi_encode_line(ctx, "awrite 0x3FFFFFF,0");
+  assert_int_equal(err, RCW_OK);
+
+  rcw_ctx_free(ctx);
+}
+
+static void
+test_pbi_loadacwindow_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* 14-bit field; 0x4000 sets bit 14 and corrupts the CMD byte. */
+  rcw_error_t err = rcw_pbi_encode_line(ctx, "loadacwindow 0x4000");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  err = rcw_pbi_encode_line(ctx, "loadacwindow 0x3FFF");
+  assert_int_equal(err, RCW_OK);
+
+  rcw_ctx_free(ctx);
+}
+
+static void
+test_pbi_blockcopy_src_overflow(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* SRC interface byte is 8 bits; 0x100 spills into the CMD byte. */
+  rcw_error_t err = rcw_pbi_encode_line(ctx,
+      "blockcopy 0x100,0x01e00210,0x18000000,0x4");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * B2 - extra parameters past PBI_MAX_PARAMS used to be silently
+ * dropped; the encoder must now report it.
+ */
+static void
+test_pbi_too_many_params(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* awrite.b5 takes 5 params; supply 6 */
+  rcw_error_t err = rcw_pbi_encode_line(ctx,
+      "awrite.b5 0x100,0x1,0x2,0x3,0x4,0x5");
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * B2 - param string longer than the internal 1024-byte buffer used to
+ * silently truncate (snprintf), causing the trailing tokens to parse
+ * a half-finished expression. Now reported as a syntax error.
+ */
+static void
+test_pbi_param_string_too_long(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  /* Build "write 0,0+0+0+...+0" with enough '+0' to overflow 1024B */
+  char line[2048];
+  int n = snprintf(line, sizeof(line), "write 0,0");
+  for (int i = 0; i < 600; i++)
+    n += snprintf(line + n, sizeof(line) - n, "+0");
+
+  rcw_error_t err = rcw_pbi_encode_line(ctx, line);
+  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -270,6 +462,16 @@ main(void) {
     cmocka_unit_test(test_pbi_blockcopy),
     cmocka_unit_test(test_pbi_loadacwindow),
     cmocka_unit_test(test_pbi_poll),
+    cmocka_unit_test(test_eval_recursion_capped),
+    cmocka_unit_test(test_eval_shift_count_overflow),
+    cmocka_unit_test(test_eval_numeric_literal_overflow),
+    cmocka_unit_test(test_pbi_write_addr_overflow),
+    cmocka_unit_test(test_pbi_write_b1_addr_overflow),
+    cmocka_unit_test(test_pbi_awrite_addr_overflow),
+    cmocka_unit_test(test_pbi_loadacwindow_overflow),
+    cmocka_unit_test(test_pbi_blockcopy_src_overflow),
+    cmocka_unit_test(test_pbi_too_many_params),
+    cmocka_unit_test(test_pbi_param_string_too_long),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);
