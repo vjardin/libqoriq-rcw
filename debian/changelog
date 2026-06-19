@@ -1,3 +1,9 @@
+libqoriq-rcw (1.0.0-1) unstable; urgency=medium
+
+  * First stable release. Public C API is now considered stable.
+
+ -- Vincent Jardin <vjardin@free.fr>  Fri, 19 Jun 2026 00:00:00 +0000
+
 libqoriq-rcw (0.2.0-1) unstable; urgency=medium
 
   * New public API: rcw_preprocess_file(). Runs the embedded mcpp

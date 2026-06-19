@@ -16,8 +16,8 @@
 extern "C" {
 #endif
 
-#define QORIQ_RCW_VERSION_MAJOR 0
-#define QORIQ_RCW_VERSION_MINOR 2
+#define QORIQ_RCW_VERSION_MAJOR 1
+#define QORIQ_RCW_VERSION_MINOR 0
 #define QORIQ_RCW_VERSION_PATCH 0
 
 /* Error codes */
