@@ -1,2 +1,4 @@
 option('tests', type : 'boolean', value : true,
   description : 'Build the cmocka-based unit test suite (developers & CI). Set false for packaging.')
+option('man', type : 'feature', value : 'auto',
+  description : 'Build man pages (requires pandoc). auto = build if pandoc available.')

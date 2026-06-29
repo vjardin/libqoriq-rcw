@@ -49,14 +49,15 @@ pkg.generate(libqoriq_rcw,
   description : 'QorIQ Reset Configuration Word compiler library (RCW)',
   libraries_private : ['-lmcpp'])
 
-pandoc = find_program('pandoc', required : true)
-
-man3 = custom_target('libqoriq-rcw.3',
-  input : 'man/libqoriq-rcw.3.md',
-  output : 'libqoriq-rcw.3',
-  command : [pandoc, '-s', '-t', 'man', '@INPUT@', '-o', '@OUTPUT@'],
-  install : true,
-  install_dir : get_option('mandir') / 'man3')
+pandoc = find_program('pandoc', required : get_option('man'))
+if pandoc.found()
+  man3 = custom_target('libqoriq-rcw.3',
+    input : 'man/libqoriq-rcw.3.md',
+    output : 'libqoriq-rcw.3',
+    command : [pandoc, '-s', '-t', 'man', '@INPUT@', '-o', '@OUTPUT@'],
+    install : true,
+    install_dir : get_option('mandir') / 'man3')
+endif
 
 if get_option('tests')
   subdir('tests')
