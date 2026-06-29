@@ -58,4 +58,6 @@ man3 = custom_target('libqoriq-rcw.3',
   install : true,
   install_dir : get_option('mandir') / 'man3')
 
-subdir('tests')
+if get_option('tests')
+  subdir('tests')
+endif
