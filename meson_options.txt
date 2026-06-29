@@ -1,0 +1,2 @@
+option('tests', type : 'boolean', value : true,
+  description : 'Build the cmocka-based unit test suite (developers & CI). Set false for packaging.')
