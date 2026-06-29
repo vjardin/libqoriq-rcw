@@ -83,6 +83,50 @@ This installs:
 - `qoriq-rcw/rcw.h` to `$includedir/qoriq-rcw/`
 - `libqoriq-rcw.pc` pkg-config file
 
+## Releasing
+
+The version number shall be bumped for every release:
+
+| File                      | What to change                                |
+|---------------------------|-----------------------------------------------|
+| `meson.build`             | the `version :` field of the `project()` call |
+| `include/qoriq-rcw/rcw.h` | `QORIQ_RCW_VERSION_MAJOR` / `_MINOR` / `_PATCH` |
+| `debian/changelog`        | a new top entry `libqoriq-rcw (X.Y.Z-1) ...`  |
+
+Add the changelog entry with the text timestamp:
+
+```bash
+date -R # e.g. Mon, 29 Jun 2026 15:14:51 +0200
+```
+
+Commit the three files, create an annotated tag, and push both:
+
+```bash
+git add meson.build include/qoriq-rcw/rcw.h debian/changelog
+git commit -m "Release X.Y.Z"
+git tag -a vX.Y.Z -m "libqoriq-rcw X.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+```
+
+Then, GitHub shall auto-generate the source archives
+(`.tar.gz` / `.zip`) for the tag; if needed use `gh release create`:
+
+```bash
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+```
+
+The tarball is then available at:
+
+```
+https://github.com/vjardin/libqoriq-rcw/archive/refs/tags/vX.Y.Z.tar.gz
+```
+
+For example: the 1.0.1 release was commit
+[`aa075dd`](https://github.com/vjardin/libqoriq-rcw/commit/aa075dd8fdb1b255fad40fb0f5692d4e2fee3cab)
+("Release 1.0.1"), tagged `v1.0.1`
+([release page](https://github.com/vjardin/libqoriq-rcw/releases/tag/v1.0.1)).
+
 ## Usage
 
 ```c
