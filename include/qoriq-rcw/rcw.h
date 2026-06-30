@@ -18,7 +18,7 @@ extern "C" {
 
 #define QORIQ_RCW_VERSION_MAJOR 1
 #define QORIQ_RCW_VERSION_MINOR 0
-#define QORIQ_RCW_VERSION_PATCH 1
+#define QORIQ_RCW_VERSION_PATCH 2
 
 /* Error codes */
 typedef enum {
