@@ -114,19 +114,8 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
     total += 8; /* terminator */
 
   /*
-   * LX2160A SP scratch ceiling -- see PBL_SP_SCRATCH_CEILING_BYTES
+   * LX2160A SP scratch ceiling: see PBL_SP_SCRATCH_CEILING_BYTES
    * in rcw_internal.h for the rationale and trade-offs.
-   *
-   * Bench evidence (Nodebox v3, 2026-05-01):
-   *   3724 bytes total (bring-up + 800 wait padding) -> boots OK
-   *   4036 bytes total (production single-letter banner)  -> boots OK
-   *   4124 bytes total (production YYYYMMDD banner)       -> SILENT
-   *   4124 bytes total (bring-up + 900 wait padding)      -> SILENT
-   *   6524 bytes total (bring-up + 1500 wait padding)     -> SILENT
-   * Threshold sits in [4037, 4124], best estimate exactly 4096.
-   *
-   * Always-on (not gated by ctx->warnings) because the misencoding is
-   * silent and 100% reproducible -- the user needs to know.
    */
   if (total >= PBL_SP_SCRATCH_CEILING_BYTES) {
     size_t pbi_body = ctx->pbi.len;

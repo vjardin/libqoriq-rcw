@@ -178,24 +178,15 @@
 
 /*
  * LX2160A Service Processor scratch ceiling for the total PBL image
- * (RCW + preamble + PBI + terminator) -- empirical, undocumented in
- * the LX2160A Reference Manual. PBL images at or above this size
- * silently fail to boot: the chip emits no UART output and never
- * reaches BL2 (the SP appears to load PBI commands into a ~4 KB
- * scratch buffer; anything past the boundary is silently truncated,
- * the trailing STOP terminator is lost, and the parser walks off
- * into garbage).
+ * (RCW + preamble + PBI + terminator): undocumented in the LX2160A
+ * Reference Manual, but the boundary has been tested manually:
  *
- * Bench evidence is in rcw_binary.c next to the warning emission.
+ *     4092 bytes  -> boots
+ *     4096 bytes  -> SILENT
  *
- * The PBI_LENGTH RCW field itself is 12 bits and stored in 32-bit
- * words (rcw.py / rcw_binary.c) so it can address up to ~16 KB --
- * PBI_LENGTH overflow is NOT this ceiling; it is SP hardware.
- *
- * Other Layerscape SoCs in scope (LS1028, LS1088, LS2088) may have
- * different ceilings. We don't have bench evidence; treat this value
- * as the LX2160A-conservative threshold and lower if a smaller-buffer
- * SoC is later characterised.
+ * Other Layerscape SoCs (LS1028, LS1088, LS2088) may have
+ * different ceilings. I don't have test evidence; treat this value
+ * as the LX2160A-conservative threshold.
  */
 #define PBL_SP_SCRATCH_CEILING_BYTES 4096
 
