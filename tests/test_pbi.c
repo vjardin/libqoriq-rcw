@@ -245,11 +245,59 @@ test_pbi_poll(void **state) {
 
   rcw_error_t err = rcw_pbi_encode_line(ctx, "poll 0x01e00404,0x00000001,0x00000001");
   assert_int_equal(err, RCW_OK);
-  assert_int_equal(ctx->pbi.len, 12);
 
-  assert_int_equal(pbi_word(ctx, 0), 0x80800000 | 0x01e00404);
-  assert_int_equal(pbi_word(ctx, 4), 0x00000001);
+  /*
+   * Four words per LX2160ARM Section 8.3.11 Table 44: the address has
+   * a word of its own and word0's low half is reserved-zero. Note the
+   * address here is exactly the case that used to break: ORed into
+   * word0 it produced 0x81e00404, whose command byte 0x81 is
+   * poll.long, a short poll silently became a long one.
+   */
+  assert_int_equal(ctx->pbi.len, 16);
+
+  assert_int_equal(pbi_word(ctx, 0), 0x80800000);
+  assert_int_equal(pbi_word(ctx, 4), 0x01e00404);
   assert_int_equal(pbi_word(ctx, 8), 0x00000001);
+  assert_int_equal(pbi_word(ctx, 12), 0x00000001);
+
+  rcw_ctx_free(ctx);
+}
+
+/* poll.long differs only in the command byte; the layout is the same. */
+static void
+test_pbi_poll_long(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  rcw_error_t err = rcw_pbi_encode_line(ctx,
+      "poll.long 0x01e00404,0x0000000f,0x00000002");
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->pbi.len, 16);
+
+  assert_int_equal(pbi_word(ctx, 0), 0x80810000);
+  assert_int_equal(pbi_word(ctx, 4), 0x01e00404);
+  assert_int_equal(pbi_word(ctx, 8), 0x0000000f);
+  assert_int_equal(pbi_word(ctx, 12), 0x00000002);
+
+  rcw_ctx_free(ctx);
+}
+
+/*
+ * A full 28-bit address must survive intact -- it no longer shares a
+ * word with the command byte.
+ */
+static void
+test_pbi_poll_wide_address(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+
+  rcw_error_t err = rcw_pbi_encode_line(ctx,
+      "poll 0x0fffffff,0xffffffff,0xffffffff");
+  assert_int_equal(err, RCW_OK);
+  assert_int_equal(ctx->pbi.len, 16);
+
+  assert_int_equal(pbi_word(ctx, 0), 0x80800000);  /* command intact */
+  assert_int_equal(pbi_word(ctx, 4), 0x0fffffff);  /* address intact */
 
   rcw_ctx_free(ctx);
 }
@@ -462,6 +510,8 @@ main(void) {
     cmocka_unit_test(test_pbi_blockcopy),
     cmocka_unit_test(test_pbi_loadacwindow),
     cmocka_unit_test(test_pbi_poll),
+    cmocka_unit_test(test_pbi_poll_long),
+    cmocka_unit_test(test_pbi_poll_wide_address),
     cmocka_unit_test(test_eval_recursion_capped),
     cmocka_unit_test(test_eval_shift_count_overflow),
     cmocka_unit_test(test_eval_numeric_literal_overflow),

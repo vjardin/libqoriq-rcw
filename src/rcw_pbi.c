@@ -489,10 +489,21 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       rcw_set_error(ctx, "\"poll\" requires 3 parameters: %s", line);
       return RCW_ERR_PBI_SYNTAX;
     }
+    /*
+     * This intentionally diverges from rcw.py, which does the
+     * same ORing and additionally computes 0x80000000 + (cmd << 24),
+     * overflowing 32 bits for cmd=0x80, it cannot emit a valid poll
+     * at all. No board in the upstream rcw/ tree uses poll, so the
+     * byte-identity cross-validation never covered this path and is
+     * unaffected by the correction.
+     */
     uint32_t cmd = (strcmp(suffix, "long") == 0)
         ? PBI_GENCMD_POLL_LONG : PBI_GENCMD_POLL_SHORT;
     err = pbi_pack_word(ctx,
-        PBL_CMD_GENERAL | (cmd << PBI_CMD_SHIFT) | params[0]);
+        PBL_CMD_GENERAL | (cmd << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[0]);
     if (err != RCW_OK)
       return err;
     err = pbi_pack_word(ctx, params[1]);

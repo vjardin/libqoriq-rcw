@@ -737,81 +737,46 @@ test_decompile_roundtrip_all_mnemonics(void **state) {
 }
 
 /*
- * KNOWN DEFECT, pinned: "poll" does not round-trip, and the encoder
- * disagrees with the reference manual.
+ * poll round-trips now that rcw_pbi.c emits the four words of
+ * LX2160ARM Section 8.3.11 Table 44 (word0 = HDR|CMD|0x0000, then
+ * ADDR, MASK, CONDITION) and agrees with the decompiler, which
+ * already followed the RM.
  *
- * LX2160ARM Section 8.3.11 Table 44 gives Poll FOUR words:
- *     word0 = HDR(0x80) | CMD(0x80/0x81) | 0x0000
- *     word1 = ADDR    word2 = MASK    word3 = CONDITION
+ * Before that fix the encoder wrote three words with the address
+ * ORed into word0: the decompiler then read one word too many and
+ * printed MASK, CONDITION and the NEXT command's header as the three
+ * arguments, desynchronising the rest of the stream. A wide address
+ * also corrupted the command byte, turning a short poll into a long
+ * one. Both are covered here and in test_pbi.c.
  *
- * rcw_pbi.c emits only THREE, ORing the address into word0 where the
- * RM mandates zeros (rcw.py:396 does the same, and its arithmetic --
- * 0x80000000 + (cmd << 24) -- overflows 32 bits for cmd=0x80, so the
- * reference implementation cannot emit a valid poll either).
- * rcw_decompile.c consumes four words, i.e. it follows the RM.
- *
- * Consequences, in order of severity:
- *   1. A poll compiled by this library is malformed for the Service
- *      Processor. A bad PBI command aborts the reset sequence
- *      (ERROR_PBI_COMMAND_UNKNOWN 0x67), so the board boots silently.
- *   2. Decompiling then recompiling loses 12 bytes per poll and
- *      corrupts the stream: the emitter prints MASK, CONDITION and
- *      the NEXT command's header word as the three arguments, then
- *      desynchronises into "/* Unknown word *\/" comments.
- *
- * Nothing shipped is affected: no board in the upstream rcw/ tree
- * uses poll (0 occurrences), which is exactly why byte-identity
- * against rcw.py never exercised this path, and the nbxv3 images use
- * only write/awrite/wait/blockcopy/loadacwindow.
- *
- * Fixing it means changing emitted bytes, so it is recorded here
- * rather than quietly patched. When the encoder is corrected to four
- * words, this test fails -- replace it with a byte-identity
- * round-trip alongside the others above.
+ * Sizes: poll 16 + poll.long 16 = 32.
  */
 static void
-test_decompile_poll_roundtrip_is_broken(void **state) {
+test_decompile_roundtrip_poll(void **state) {
   (void)state;
 
-  char src[1024];
-  int n = snprintf(src, sizeof(src),
-                   "%sSYS_PLL_RAT=7\n.pbi\n"
-                   "poll 0x00000620,0xffffffff,0x80000000\n"
-                   "poll.long 0x00000624,0x0000000f,0x00000001\n"
-                   ".end\n", seam_rcwi);
-  assert_true(n > 0 && (size_t)n < sizeof(src));
-
-  rcw_ctx_t *c1 = rcw_ctx_new();
-  assert_non_null(c1);
-  uint8_t *b1 = NULL;
-  size_t l1 = 0;
-  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), &b1, &l1),
-                   RCW_OK);
-
-  /* Encoder: three words per poll, not the RM's four. */
-  assert_int_equal(l1, 140 + (2 * 12) + 8);
-
-  rcw_ctx_t *c2 = rcw_ctx_new();
-  assert_non_null(c2);
-  assert_int_equal(rcw_parse(c2, seam_rcwi, strlen(seam_rcwi)), RCW_OK);
-
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
   char *out = NULL;
-  size_t out_len = 0;
-  assert_int_equal(rcw_decompile(c2, b1, l1, &out, &out_len), RCW_OK);
 
-  /*
-   * Decompiler over-reads by one word: the address never appears, and
-   * the third argument is the following command's header word
-   * (0x80810624 = the poll.long that follows).
-   */
+  seam_roundtrip("poll 0x01e00620,0xffffffff,0x80000000\n"
+                 "poll.long 0x01e00624,0x0000000f,0x00000001\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  assert_int_equal(l1, 140 + 32 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  /* Address preserved, and the two forms stay distinct. */
   assert_non_null(strstr(out,
-      "poll.short 0xffffffff,0x80000000,0x80810624"));
-  assert_non_null(strstr(out, "Unknown word"));
+      "\npoll.short 0x01e00620,0xffffffff,0x80000000\n"));
+  assert_non_null(strstr(out,
+      "\npoll.long 0x01e00624,0x0000000f,0x00000001\n"));
+  assert_null(strstr(out, "Unknown word"));
 
   rcw_free(out);
   rcw_free(b1);
-  rcw_ctx_free(c1);
-  rcw_ctx_free(c2);
+  rcw_free(b2);
 }
 
 /*
@@ -902,7 +867,7 @@ main(void) {
     cmocka_unit_test(test_decompile_awrite_emits_width_suffix),
     cmocka_unit_test(test_decompile_roundtrip_awrite_widths),
     cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
-    cmocka_unit_test(test_decompile_poll_roundtrip_is_broken),
+    cmocka_unit_test(test_decompile_roundtrip_poll),
     cmocka_unit_test(test_decompile_loadcondition_does_not_recompile),
     cmocka_unit_test(test_decompile_fields),
     cmocka_unit_test(test_decompile_buffer_with_header),
