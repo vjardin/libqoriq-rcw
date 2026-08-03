@@ -556,10 +556,354 @@ test_decompile_short_preamble_no_oob(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/*
+ * PBI mnemonic seam: decompiler emitter vs rcw_pbi.c parser.
+ *
+ * test_pbi.c already covers ENCODING of every awrite width, and the
+ * round-trip test above covers decompile+recompile but only for a
+ * single plain "write". Nothing crossed the two, so a decompiler that
+ * emitted a bare "awrite" for a B=4/B=5 command went unnoticed: the
+ * source still listed every data word, but recompiling parsed it as
+ * B=3 and silently dropped all but the first.
+ *
+ * These tests assert exact byte counts, not just equality, so a
+ * truncation cannot hide behind a coincidentally-matching prefix.
+ */
+
+/* Minimal .rcwi shared by the seam tests below. */
+static const char seam_rcwi[] =
+  "%size=1024\n"
+  "%pbiformat=2\n"
+  "%classicbitnumbers=1\n"
+  "%littleendian=1\n"
+  "%nocrc=1\n"
+  "SYS_PLL_RAT[6:2]\n"
+  "PBI_LENGTH[287:276]\n";
+
+/*
+ * Compile `pbi_body` (a .pbi block), decompile it, recompile the
+ * result, and hand both binaries back to the caller. Any step failing
+ * is a test failure.
+ */
+static void
+seam_roundtrip(const char *pbi_body,
+               uint8_t **bin1, size_t *bin1_len,
+               uint8_t **bin2, size_t *bin2_len,
+               char **decompiled) {
+  char src[4096];
+  int n = snprintf(src, sizeof(src),
+                   "%sSYS_PLL_RAT=7\n.pbi\n%s.end\n", seam_rcwi, pbi_body);
+  assert_true(n > 0 && (size_t)n < sizeof(src));
+
+  rcw_ctx_t *c1 = rcw_ctx_new();
+  assert_non_null(c1);
+  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), bin1, bin1_len),
+                   RCW_OK);
+
+  rcw_ctx_t *c2 = rcw_ctx_new();
+  assert_non_null(c2);
+  assert_int_equal(rcw_parse(c2, seam_rcwi, strlen(seam_rcwi)), RCW_OK);
+
+  char *out = NULL;
+  size_t out_len = 0;
+  assert_int_equal(rcw_decompile(c2, *bin1, *bin1_len, &out, &out_len),
+                   RCW_OK);
+  assert_non_null(out);
+
+  size_t comb_len = strlen(seam_rcwi) + out_len;
+  char *comb = malloc(comb_len + 1);
+  assert_non_null(comb);
+  memcpy(comb, seam_rcwi, strlen(seam_rcwi));
+  memcpy(comb + strlen(seam_rcwi), out, out_len);
+  comb[comb_len] = '\0';
+
+  rcw_ctx_t *c3 = rcw_ctx_new();
+  assert_non_null(c3);
+  assert_int_equal(rcw_compile_buffer(c3, comb, comb_len, bin2, bin2_len),
+                   RCW_OK);
+
+  free(comb);
+  if (decompiled)
+    *decompiled = out;
+  else
+    rcw_free(out);
+  rcw_ctx_free(c1);
+  rcw_ctx_free(c2);
+  rcw_ctx_free(c3);
+}
+
+/*
+ * The decompiler must spell the width into the mnemonic, and must
+ * still emit every data word.
+ */
+static void
+test_decompile_awrite_emits_width_suffix(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+
+  seam_roundtrip("awrite 0x0400098,0x11111111\n"
+                 "awrite.b4 0x0100000,0x22222222,0x33333333\n"
+                 "awrite.b5 0x2508000,0x44444444,0x55555555,"
+                            "0x66666666,0x77777777\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  /* Mnemonics, each at the start of its own line. */
+  assert_non_null(strstr(out, "\nawrite 0x00400098,0x11111111\n"));
+  assert_non_null(strstr(out,
+      "\nawrite.b4 0x00100000,0x22222222,0x33333333\n"));
+  assert_non_null(strstr(out,
+      "\nawrite.b5 0x02508000,0x44444444,0x55555555,"
+      "0x66666666,0x77777777\n"));
+
+  /* A bare "awrite " must not be used for the wide forms. */
+  assert_null(strstr(out, "\nawrite 0x00100000"));
+  assert_null(strstr(out, "\nawrite 0x02508000"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
+/*
+ * Byte-exact regression for the 992-byte truncation. PBI payload:
+ *   awrite    (B=3)  4 + 4      =  8
+ *   awrite.b4 (B=4)  4 + 8      = 12
+ *   awrite.b5 (B=5)  4 + 16     = 20
+ *                              --- 40
+ * plus 140 header (preamble + Load RCW + RCW + checksum) and an
+ * 8-byte STOP terminator (%nocrc=1) = 188.
+ */
+static void
+test_decompile_roundtrip_awrite_widths(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+
+  seam_roundtrip("awrite 0x0400098,0x11111111\n"
+                 "awrite.b4 0x0100000,0x22222222,0x33333333\n"
+                 "awrite.b5 0x2508000,0x44444444,0x55555555,"
+                            "0x66666666,0x77777777\n",
+                 &b1, &l1, &b2, &l2, NULL);
+
+  assert_int_equal(l1, 140 + 40 + 8);
+  assert_int_equal(l2, l1);              /* no silent shrink */
+  assert_memory_equal(b1, b2, l1);
+
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
+/*
+ * Every other mnemonic the decompiler can emit, in one image, so the
+ * emitter/parser seam is covered as a whole rather than per-command.
+ *
+ * Sizes: loadacwindow 4, write 8, write.b1 8, wait 4,
+ * blockcopy 16 = 40.
+ * poll is excluded, see the dedicated test below.
+ */
+static void
+test_decompile_roundtrip_all_mnemonics(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+
+  seam_roundtrip("loadacwindow 0x00000005\n"
+                 "write 0x01e00620,0x80000000\n"
+                 "write.b1 0x021c0000,0x00000049\n"
+                 "wait 0x00000800\n"
+                 "blockcopy 0x0f,0x00009000,0x1800d000,0x00020000\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  assert_int_equal(l1, 140 + 40 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  assert_non_null(strstr(out, "\nloadacwindow 0x00000005\n"));
+  assert_non_null(strstr(out, "\nwrite 0x01e00620,0x80000000\n"));
+  assert_non_null(strstr(out, "\nwrite.b1 0x021c0000,0x00000049\n"));
+  assert_non_null(strstr(out, "\nwait 0x00000800\n"));
+  assert_non_null(strstr(out,
+      "\nblockcopy 0x0f,0x00009000,0x1800d000,0x00020000\n"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
+/*
+ * KNOWN DEFECT, pinned: "poll" does not round-trip, and the encoder
+ * disagrees with the reference manual.
+ *
+ * LX2160ARM Section 8.3.11 Table 44 gives Poll FOUR words:
+ *     word0 = HDR(0x80) | CMD(0x80/0x81) | 0x0000
+ *     word1 = ADDR    word2 = MASK    word3 = CONDITION
+ *
+ * rcw_pbi.c emits only THREE, ORing the address into word0 where the
+ * RM mandates zeros (rcw.py:396 does the same, and its arithmetic --
+ * 0x80000000 + (cmd << 24) -- overflows 32 bits for cmd=0x80, so the
+ * reference implementation cannot emit a valid poll either).
+ * rcw_decompile.c consumes four words, i.e. it follows the RM.
+ *
+ * Consequences, in order of severity:
+ *   1. A poll compiled by this library is malformed for the Service
+ *      Processor. A bad PBI command aborts the reset sequence
+ *      (ERROR_PBI_COMMAND_UNKNOWN 0x67), so the board boots silently.
+ *   2. Decompiling then recompiling loses 12 bytes per poll and
+ *      corrupts the stream: the emitter prints MASK, CONDITION and
+ *      the NEXT command's header word as the three arguments, then
+ *      desynchronises into "/* Unknown word *\/" comments.
+ *
+ * Nothing shipped is affected: no board in the upstream rcw/ tree
+ * uses poll (0 occurrences), which is exactly why byte-identity
+ * against rcw.py never exercised this path, and the nbxv3 images use
+ * only write/awrite/wait/blockcopy/loadacwindow.
+ *
+ * Fixing it means changing emitted bytes, so it is recorded here
+ * rather than quietly patched. When the encoder is corrected to four
+ * words, this test fails -- replace it with a byte-identity
+ * round-trip alongside the others above.
+ */
+static void
+test_decompile_poll_roundtrip_is_broken(void **state) {
+  (void)state;
+
+  char src[1024];
+  int n = snprintf(src, sizeof(src),
+                   "%sSYS_PLL_RAT=7\n.pbi\n"
+                   "poll 0x00000620,0xffffffff,0x80000000\n"
+                   "poll.long 0x00000624,0x0000000f,0x00000001\n"
+                   ".end\n", seam_rcwi);
+  assert_true(n > 0 && (size_t)n < sizeof(src));
+
+  rcw_ctx_t *c1 = rcw_ctx_new();
+  assert_non_null(c1);
+  uint8_t *b1 = NULL;
+  size_t l1 = 0;
+  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), &b1, &l1),
+                   RCW_OK);
+
+  /* Encoder: three words per poll, not the RM's four. */
+  assert_int_equal(l1, 140 + (2 * 12) + 8);
+
+  rcw_ctx_t *c2 = rcw_ctx_new();
+  assert_non_null(c2);
+  assert_int_equal(rcw_parse(c2, seam_rcwi, strlen(seam_rcwi)), RCW_OK);
+
+  char *out = NULL;
+  size_t out_len = 0;
+  assert_int_equal(rcw_decompile(c2, b1, l1, &out, &out_len), RCW_OK);
+
+  /*
+   * Decompiler over-reads by one word: the address never appears, and
+   * the third argument is the following command's header word
+   * (0x80810624 = the poll.long that follows).
+   */
+  assert_non_null(strstr(out,
+      "poll.short 0xffffffff,0x80000000,0x80810624"));
+  assert_non_null(strstr(out, "Unknown word"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_ctx_free(c1);
+  rcw_ctx_free(c2);
+}
+
+/*
+ * Known gap, pinned deliberately: rcw_decompile.c emits
+ * "loadcondition" for PBI command 0x14, but rcw_pbi.c has no such
+ * mnemonic, so the decompiled source does NOT recompile: it fails
+ * with "Unknown PBI command". Unlike the awrite case this is a loud
+ * failure rather than silent corruption, which is why it is recorded
+ * rather than worked around.
+ *
+ * If parser support for loadcondition is added, this test will start
+ * failing: replace it with a byte-identity round-trip like the ones
+ * above.
+ */
+static void
+test_decompile_loadcondition_does_not_recompile(void **state) {
+  (void)state;
+
+  /* Hand-build a PBI: Load Condition (0x14) is 12 bytes. */
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "SYS_PLL_RAT[6:2]\n"
+    "PBI_LENGTH[287:276]\n"
+    "SYS_PLL_RAT=7\n";
+
+  rcw_ctx_t *c1 = rcw_ctx_new();
+  assert_non_null(c1);
+  uint8_t *bin = NULL;
+  size_t bin_len = 0;
+  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), &bin, &bin_len),
+                   RCW_OK);
+
+  /* Splice a Load Condition command in front of the terminator. */
+  static const uint8_t loadcond[12] = {
+    0x00, 0x00, 0x14, 0x80,   /* 0x80140000, little-endian */
+    0x78, 0x56, 0x34, 0x12,
+    0x21, 0x43, 0x65, 0x87,
+  };
+  size_t spliced_len = bin_len + sizeof(loadcond);
+  uint8_t *spliced = malloc(spliced_len);
+  assert_non_null(spliced);
+  memcpy(spliced, bin, bin_len - 8);
+  memcpy(spliced + bin_len - 8, loadcond, sizeof(loadcond));
+  memcpy(spliced + bin_len - 8 + sizeof(loadcond), bin + bin_len - 8, 8);
+
+  rcw_ctx_t *c2 = rcw_ctx_new();
+  assert_non_null(c2);
+  assert_int_equal(rcw_parse(c2, seam_rcwi, strlen(seam_rcwi)), RCW_OK);
+
+  char *out = NULL;
+  size_t out_len = 0;
+  assert_int_equal(rcw_decompile(c2, spliced, spliced_len, &out, &out_len),
+                   RCW_OK);
+  assert_non_null(strstr(out, "loadcondition 0x12345678,0x87654321"));
+
+  /* ... and that spelling is not accepted back. */
+  size_t comb_len = strlen(seam_rcwi) + out_len;
+  char *comb = malloc(comb_len + 1);
+  assert_non_null(comb);
+  memcpy(comb, seam_rcwi, strlen(seam_rcwi));
+  memcpy(comb + strlen(seam_rcwi), out, out_len);
+  comb[comb_len] = '\0';
+
+  rcw_ctx_t *c3 = rcw_ctx_new();
+  assert_non_null(c3);
+  uint8_t *bin2 = NULL;
+  size_t bin2_len = 0;
+  assert_int_equal(rcw_compile_buffer(c3, comb, comb_len, &bin2, &bin2_len),
+                   RCW_ERR_PBI_SYNTAX);
+
+  free(comb);
+  free(spliced);
+  rcw_free(out);
+  rcw_free(bin);
+  rcw_ctx_free(c1);
+  rcw_ctx_free(c2);
+  rcw_ctx_free(c3);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_decompile_roundtrip),
+    cmocka_unit_test(test_decompile_awrite_emits_width_suffix),
+    cmocka_unit_test(test_decompile_roundtrip_awrite_widths),
+    cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
+    cmocka_unit_test(test_decompile_poll_roundtrip_is_broken),
+    cmocka_unit_test(test_decompile_loadcondition_does_not_recompile),
     cmocka_unit_test(test_decompile_fields),
     cmocka_unit_test(test_decompile_buffer_with_header),
     cmocka_unit_test(test_decompile_buffer_no_header),

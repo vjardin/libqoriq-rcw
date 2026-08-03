@@ -175,15 +175,50 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       /* Altconfig write */
       uint8_t bcnt = (hdr & PBI_AWRITE_B_MASK) >> PBI_AWRITE_B_RSHIFT;
       if (bcnt) {
-        strbuf_printf(sb, "awrite 0x%08x", word & PBI_AWRITE_ADDR_MASK);
-        for (uint32_t j = 0;
-             j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
-             j += 4) {
-          uint32_t a1 = unpack(pbi + i);
-          i += 4;
-          strbuf_printf(sb, ",0x%08x", a1);
+        /*
+         * The payload width lives in the mnemonic suffix, not in the
+         * argument count: the parser dispatches on "awrite" (B=3, one
+         * data word), "awrite.b4" (two) and "awrite.b5" (four). Emit
+         * the matching spelling -- writing a bare "awrite" for a wide
+         * command produces source that still *lists* every data word
+         * but recompiles to B=3, silently dropping all but the first
+         * and shrinking the PBI (measured: 992 bytes lost over one
+         * nbxv3 image, which then boots differently).
+         *
+         * The hardware allows B=1..10 (Section 8.3.2.2); we can only
+         * round-trip what rcw_pbi.c can parse back. Anything else is
+         * flagged rather than mis-emitted.
+         */
+        const char *mnemonic = NULL;
+        switch (bcnt) {
+        case PBI_AWRITE_B3: mnemonic = "awrite";    break;
+        case PBI_AWRITE_B4: mnemonic = "awrite.b4"; break;
+        case PBI_AWRITE_B5: mnemonic = "awrite.b5"; break;
+        default: break;
         }
-        strbuf_printf(sb, "\n");
+
+        if (!mnemonic) {
+          strbuf_printf(sb,
+              "/* Unsupported awrite payload width B=%u (%u bytes) at "
+              "PBI offset %zu -- not representable in .rcw source */\n",
+              bcnt, 1u << (bcnt - 1), (size_t)(i - 4));
+          /* Skip the payload so the stream stays in sync. */
+          for (uint32_t j = 0;
+               j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
+               j += 4)
+            i += 4;
+        } else {
+          strbuf_printf(sb, "%s 0x%08x", mnemonic,
+                        word & PBI_AWRITE_ADDR_MASK);
+          for (uint32_t j = 0;
+               j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
+               j += 4) {
+            uint32_t a1 = unpack(pbi + i);
+            i += 4;
+            strbuf_printf(sb, ",0x%08x", a1);
+          }
+          strbuf_printf(sb, "\n");
+        }
 
       } else {
         strbuf_printf(sb, "/* Unknown word 0x%08x */\n", word);
