@@ -37,6 +37,13 @@ Supported platforms: LS1028, LS1088, LS2088, and LX2160 families (PBI format 2).
 - No runtime dependency on an external C compiler: preprocessing is
   handled in-process by [mcpp](http://mcpp.sourceforge.net/)
 
+## TODO
+
+Add the PBI flow-control opcodes `loadc` (0x14), `jump` (0x84) and
+`jumpc` (0x85) for both the compile and decompile paths. See
+[nxp-qoriq/rcw#5](https://github.com/nxp-qoriq/rcw/pull/5).
+Wait for the official landing into `rcw.py`.
+
 ## Dependencies
 
 - C17 compiler (gcc or clang)
