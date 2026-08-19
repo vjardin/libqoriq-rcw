@@ -9,6 +9,7 @@ test_sources = {
   'test_binary'    : files('test_binary.c'),
   'test_decompile' : files('test_decompile.c'),
   'test_cond'      : files('test_cond.c'),
+  'test_density'   : files('test_density.c'),
 }
 
 foreach name, src : test_sources

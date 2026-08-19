@@ -142,6 +142,37 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
           i += 4;
         strbuf_printf(sb, "/* Stop command */\n");
 
+      } else if (cmd == PBI_GENCMD_CCSR_COPY && i + 12 <= pbi_len) {
+        /* RM Table 37: 16 B, word type in the low 2 bits of the header. */
+        static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
+        uint32_t wt   = word & 0x3u;
+        uint32_t src  = unpack(pbi + i); i += 4;
+        uint32_t dst  = unpack(pbi + i); i += 4;
+        uint32_t nw   = unpack(pbi + i); i += 4;
+        strbuf_printf(sb, "ccsrcopy.%s 0x%08x,0x%08x,0x%08x\n",
+                      wsuf[wt], src, dst, nw);
+
+      } else if (cmd == PBI_GENCMD_CCSR_RMW && i + 12 <= pbi_len) {
+        /*
+         * RM Table 43: 16 B, header low byte = ops[3:2] | masktype[1:0].
+         * Emitted as 0x42 per Table 27; Table 43's own "CMD = 0x02" is a
+         * documentation error (0x02 is Table 37's opcode).
+         */
+        static const char *msuf[4] = { "?", "b1", "b2", "b4" };
+        static const char *opnm[4] = { "ccsrset", "ccsrclear",
+                                       "ccsrreplace", "ccsrreserved" };
+        uint32_t mt   = word & 0x3u;
+        uint32_t ops  = (word >> 2) & 0x3u;
+        uint32_t addr = unpack(pbi + i); i += 4;
+        uint32_t mask = unpack(pbi + i); i += 4;
+        uint32_t data = unpack(pbi + i); i += 4;
+        if (ops == 2u)
+          strbuf_printf(sb, "%s.%s 0x%08x,0x%08x,0x%08x\n",
+                        opnm[ops], msuf[mt], addr, mask, data);
+        else
+          strbuf_printf(sb, "%s.%s 0x%08x,0x%08x\n",
+                        opnm[ops], msuf[mt], addr, mask);
+
       } else if (cmd == PBI_GENCMD_JUMP && i + 4 <= pbi_len) {
         /* RM Table 46: 8 bytes, one OFFSET word. Forward only. */
         uint32_t off = unpack(pbi + i); i += 4;

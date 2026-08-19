@@ -218,6 +218,8 @@
  * See LX2160ARM Section 8.2.1, Table 27 "PBI Command Summary".
  */
 #define PBI_GENCMD_BLOCKCOPY     0x00 /* Section 8.3.3:  Block Copy              */
+#define PBI_GENCMD_CCSR_COPY     0x02 /* Section 8.3.4:  CCSR Write from Address  */
+#define PBI_GENCMD_CCSR_RMW      0x42 /* Section 8.3.10: CCSR Read-Modify-Write   */
 #define PBI_GENCMD_LOAD_RCW_CS   0x10 /* Section 8.3.5:  Load RCW w/ checksum    */
 #define PBI_GENCMD_LOAD_RCW_NOCS 0x11 /* Section 8.3.5:  Load RCW w/o checksum   */
 #define PBI_GENCMD_LOADACWINDOW  0x12 /* Section 8.3.6:  Load Alt Cfg Window     */

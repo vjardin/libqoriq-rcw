@@ -31,6 +31,8 @@
 #define PBI_AWRITE_ADDR_MAX   0x03FFFFFFu
 #define PBI_ACWINDOW_MAX      0x00003FFFu
 #define PBI_BLOCKCOPY_SRC_MAX 0x000000FFu
+/* CCSR destination address is a 28-bit field (RM Tables 37 and 43). */
+#define PBI_CCSR_ADDR_MAX     0x0FFFFFFFu
 
 /*
  * Maximum nesting depth of parens / unary ops in the expression
@@ -510,6 +512,135 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     if (err != RCW_OK)
       return err;
     return pbi_pack_word(ctx, params[2]);
+
+  } else if (strcmp(op, "ccsrcopy") == 0) {
+    if (nparam < 3) {
+      rcw_set_error(ctx,
+          "\"ccsrcopy\" requires 3 parameters (src, dest, words): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /*
+     * LX2160A RM Table 37 "CCSR Write from Address", 16 bytes:
+     *   word 0  HDR=0x80, CMD=0x02, low 2 bits = WORD TYPE
+     *   word 1  SRC_ADDR  [31:0]  -- randomly accessible memory (OCRAM/SPRAM)
+     *   word 2  DEST_ADDR [27:0]  -- CCSR, upper nibble reserved
+     *   word 3  COPY LENGTH in words
+     *
+     * Word type is the width of the DESTINATION CCSR registers, not of the
+     * copy: 1 = 8-bit, 2 = 16-bit, 3 = 32-bit, and 0 is explicitly invalid.
+     * The suffix names the width in bytes (.b1/.b2/.b4) to match awrite.
+     */
+    uint32_t wtype;
+    if (strcmp(suffix, "b1") == 0)      wtype = 1;
+    else if (strcmp(suffix, "b2") == 0) wtype = 2;
+    else if (strcmp(suffix, "b4") == 0) wtype = 3;
+    else {
+      rcw_set_error(ctx,
+          "\"ccsrcopy\" needs a width suffix .b1, .b2 or .b4 "
+          "(destination register width; word type 0 is invalid): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[1] > PBI_CCSR_ADDR_MAX) {
+      rcw_set_error(ctx,
+          "\"ccsrcopy\" destination 0x%x exceeds the 28-bit CCSR field: %s",
+          params[1], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_CCSR_COPY << PBI_CMD_SHIFT) | wtype);
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[0]);
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[1]);
+    if (err != RCW_OK)
+      return err;
+    return pbi_pack_word(ctx, params[2]);
+
+  } else if (strcmp(op, "ccsrset") == 0 ||
+             strcmp(op, "ccsrclear") == 0 ||
+             strcmp(op, "ccsrreplace") == 0) {
+    /*
+     * LX2160A RM Table 43 "CCSR Read, Modify and Write", 16 bytes:
+     *   word 0  HDR=0x80, CMD=0x42, bits [3:2] ops type, [1:0] mask type
+     *   word 1  Destination CCSR Address [27:0]
+     *   word 2  Mask
+     *   word 3  Data  -- REPLACE only; ignored for set/clear
+     *
+     * ops type: 0 set (reg |= mask), 1 clear (reg &= ~mask),
+     *           2 replace (reg = (reg & ~mask) | (data & mask)), 3 reserved.
+     * mask type: 1 = MASK[7:0], 2 = MASK[15:0], 3 = MASK[31:0]; 0 invalid.
+     *
+     * DOC NOTE: RM Table 43 is titled "CCSR Write from Address" and prints
+     * "CMD = 0x02", but its body is the read-modify-write semantics and
+     * 0x02 is already Table 37's opcode. Table 27 "PBI Command Summary"
+     * lists this command as 0x42, which is what we emit -- two commands
+     * cannot share an opcode.
+     *
+     * The mask width is spelled explicitly rather than derived from the
+     * mask value: it selects the ACCESS WIDTH of the register, so deriving
+     * .b1 from a mask of 0x000000FF would silently turn a 32-bit register
+     * access into an 8-bit one.
+     */
+    uint32_t ops = (strcmp(op, "ccsrset") == 0) ? 0u
+                 : (strcmp(op, "ccsrclear") == 0) ? 1u : 2u;
+    int want = (ops == 2u) ? 3 : 2;
+    if (nparam < want) {
+      rcw_set_error(ctx,
+          "\"%s\" requires %d parameters (addr, mask%s): %s",
+          op, want, (ops == 2u) ? ", data" : "", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    uint32_t mtype;
+    if (strcmp(suffix, "b1") == 0)      mtype = 1;
+    else if (strcmp(suffix, "b2") == 0) mtype = 2;
+    else if (strcmp(suffix, "b4") == 0) mtype = 3;
+    else {
+      rcw_set_error(ctx,
+          "\"%s\" needs a mask-width suffix .b1, .b2 or .b4 "
+          "(mask type 0 is invalid): %s", op, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /* RM: destination CCSR address must be above 0x100_0000. */
+    if (params[0] <= 0x1000000u) {
+      rcw_set_error(ctx,
+          "\"%s\" destination 0x%x must be greater than 0x1000000: %s",
+          op, params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[0] > PBI_CCSR_ADDR_MAX) {
+      rcw_set_error(ctx,
+          "\"%s\" destination 0x%x exceeds the 28-bit CCSR field: %s",
+          op, params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /* RM: 4-byte mask needs a 4-byte aligned address, 2-byte needs 2. */
+    if (mtype == 3u && (params[0] % 4u) != 0u) {
+      rcw_set_error(ctx,
+          "\"%s.b4\" address 0x%x must be 4-byte aligned: %s",
+          op, params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (mtype == 2u && (params[0] % 2u) != 0u) {
+      rcw_set_error(ctx,
+          "\"%s.b2\" address 0x%x must be 2-byte aligned: %s",
+          op, params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_CCSR_RMW << PBI_CMD_SHIFT) |
+        (ops << 2) | mtype);
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[0]);
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[1]);
+    if (err != RCW_OK)
+      return err;
+    /* Data word is present for all three; the SP ignores it unless REPLACE. */
+    return pbi_pack_word(ctx, (ops == 2u) ? params[2] : 0u);
 
   } else if (strcmp(op, "loadcondition") == 0) {
     if (nparam < 2) {

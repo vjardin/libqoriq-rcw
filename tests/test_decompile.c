@@ -822,6 +822,39 @@ test_decompile_roundtrip_cond(void **state) {
   rcw_free(b2);
 }
 
+static void
+test_decompile_roundtrip_density(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+
+  seam_roundtrip("ccsrcopy.b4 0x18000000,0x01e00300,0x00000010\n"
+                 "ccsrset.b4 0x01e00400,0x0000000f\n"
+                 "ccsrclear.b4 0x01e00404,0x000000f0\n"
+                 "ccsrreplace.b4 0x01e00408,0x0000ff00,0x00005500\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  /* Four 16-byte commands. */
+  assert_int_equal(l1, 140 + 64 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  assert_non_null(strstr(out,
+      "\nccsrcopy.b4 0x18000000,0x01e00300,0x00000010\n"));
+  assert_non_null(strstr(out, "\nccsrset.b4 0x01e00400,0x0000000f\n"));
+  assert_non_null(strstr(out, "\nccsrclear.b4 0x01e00404,0x000000f0\n"));
+  assert_non_null(strstr(out,
+      "\nccsrreplace.b4 0x01e00408,0x0000ff00,0x00005500\n"));
+  assert_null(strstr(out, "Unknown word"));
+  assert_null(strstr(out, "not implemented"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -831,6 +864,7 @@ main(void) {
     cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
     cmocka_unit_test(test_decompile_roundtrip_poll),
     cmocka_unit_test(test_decompile_roundtrip_cond),
+    cmocka_unit_test(test_decompile_roundtrip_density),
     cmocka_unit_test(test_decompile_fields),
     cmocka_unit_test(test_decompile_buffer_with_header),
     cmocka_unit_test(test_decompile_buffer_no_header),
