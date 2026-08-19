@@ -494,9 +494,61 @@ test_pbi_param_string_too_long(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/*
+ * It is a legacy pbiformat=1 construct: an 8-byte CCSR write into the PBL
+ * address space that forces a read-back of the previous write, encoded as
+ * PBL_CMD_FLUSH | (pbladdr & RCW_PBLADDR_MASK) followed by a zero word.
+ *
+ * pbiformat=2 does not use it, but the encoder still accepts it for
+ * compatibility, so it is exactly the kind of path that can rot unnoticed.
+ */
+static void
+test_pbi_flush_encoding(void **state) {
+  (void)state;
+
+  static const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "SYS_PLL_RAT[6:2]\n"
+    "PBI_LENGTH[287:276]\n"
+    "SYS_PLL_RAT=7\n"
+    ".pbi\n"
+    "flush\n"
+    ".end\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  assert_non_null(ctx);
+  uint8_t *bin = NULL;
+  size_t len = 0;
+  assert_int_equal(rcw_compile_buffer(ctx, src, strlen(src), &bin, &len),
+                   RCW_OK);
+  assert_non_null(bin);
+
+  /* Two words: the flush header, then a zero. */
+  int found = 0;
+  for (size_t i = 0; i + 8 <= len; i += 4) {
+    uint32_t w = (uint32_t)bin[i] | ((uint32_t)bin[i + 1] << 8) |
+                 ((uint32_t)bin[i + 2] << 16) | ((uint32_t)bin[i + 3] << 24);
+    uint32_t n = (uint32_t)bin[i + 4] | ((uint32_t)bin[i + 5] << 8) |
+                 ((uint32_t)bin[i + 6] << 16) | ((uint32_t)bin[i + 7] << 24);
+    if ((w & 0xFF000000u) == PBL_CMD_FLUSH && n == 0u) {
+      found = 1;
+      break;
+    }
+  }
+  assert_int_equal(found, 1);
+
+  rcw_free(bin);
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(test_pbi_flush_encoding),
     cmocka_unit_test(test_eval_simple),
     cmocka_unit_test(test_eval_complex),
     cmocka_unit_test(test_pbi_write),
