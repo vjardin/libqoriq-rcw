@@ -511,6 +511,104 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       return err;
     return pbi_pack_word(ctx, params[2]);
 
+  } else if (strcmp(op, "loadcondition") == 0) {
+    if (nparam < 2) {
+      rcw_set_error(ctx,
+          "\"loadcondition\" requires 2 parameters (addr, mask): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /*
+     * LX2160A RM Table 40 "Load Condition Command Format", 12 bytes:
+     *   word 0  HDR=0x80, CMD=0x14
+     *   word 1  ADDR   -- read at PBI time, typically a CCSR register
+     *   word 2  MASK   -- ANDed with the loaded value
+     * The result is kept in an internal SP variable and consumed by the
+     * next conditional jump. Only "jumpif" consumes it today; the RM
+     * notes conditional jump is the only conditional command defined.
+     */
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_LOADCONDITION << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[0]);
+    if (err != RCW_OK)
+      return err;
+    return pbi_pack_word(ctx, params[1]);
+
+  } else if (strcmp(op, "jump") == 0) {
+    if (nparam < 1) {
+      rcw_set_error(ctx,
+          "\"jump\" requires 1 parameter (byte offset): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /*
+     * LX2160A RM Table 46 "Jump Command Format", 8 bytes:
+     *   word 0  HDR=0x80, CMD=0x84
+     *   word 1  OFFSET -- bytes forward from the start of THIS command
+     *
+     * FORWARD ONLY. The SP cannot jump backwards, so this cannot build a
+     * loop; it exists to skip a block, e.g. configuration for IP that a
+     * given personality does not use. The RM's error checks are "4-byte
+     * alignment" and "OFFSET greater than 8", both enforced here -- an
+     * offset of exactly 8 would target the word right after the command
+     * and is rejected by the SP, and a misaligned offset lands mid-command.
+     */
+    if (params[0] % 4u != 0u) {
+      rcw_set_error(ctx,
+          "\"jump\" offset 0x%x is not 4-byte aligned: %s",
+          params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[0] <= 8u) {
+      rcw_set_error(ctx,
+          "\"jump\" offset 0x%x must be greater than 8 (RM Table 46): %s",
+          params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_JUMP << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    return pbi_pack_word(ctx, params[0]);
+
+  } else if (strcmp(op, "jumpif") == 0) {
+    if (nparam < 2) {
+      rcw_set_error(ctx,
+          "\"jumpif\" requires 2 parameters (offset, condition): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /*
+     * LX2160A RM Table 47 "Conditional Jump Command Format", 12 bytes:
+     *   word 0  HDR=0x80, CMD=0x85
+     *   word 1  OFFSET    -- bytes forward from the start of THIS command
+     *   word 2  CONDITION -- compared against the value most recently
+     *                        loaded by "loadcondition"
+     *
+     * Same forward-only restriction and the same two RM error checks as
+     * the unconditional jump. Must be preceded by a "loadcondition", or
+     * the SP compares against whatever the internal variable held.
+     */
+    if (params[0] % 4u != 0u) {
+      rcw_set_error(ctx,
+          "\"jumpif\" offset 0x%x is not 4-byte aligned: %s",
+          params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[0] <= 8u) {
+      rcw_set_error(ctx,
+          "\"jumpif\" offset 0x%x must be greater than 8 (RM Table 47): %s",
+          params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_JUMP_COND << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    err = pbi_pack_word(ctx, params[0]);
+    if (err != RCW_OK)
+      return err;
+    return pbi_pack_word(ctx, params[1]);
+
   } else if (strcmp(op, "blockcopy") == 0) {
     if (nparam < 4) {
       rcw_set_error(ctx,

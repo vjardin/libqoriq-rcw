@@ -142,12 +142,21 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
           i += 4;
         strbuf_printf(sb, "/* Stop command */\n");
 
+      } else if (cmd == PBI_GENCMD_JUMP && i + 4 <= pbi_len) {
+        /* RM Table 46: 8 bytes, one OFFSET word. Forward only. */
+        uint32_t off = unpack(pbi + i); i += 4;
+        strbuf_printf(sb, "jump 0x%08x\n", off);
+
+      } else if (cmd == PBI_GENCMD_JUMP_COND && i + 8 <= pbi_len) {
+        /* RM Table 47: 12 bytes, OFFSET then CONDITION. Forward only. */
+        uint32_t off  = unpack(pbi + i); i += 4;
+        uint32_t cond = unpack(pbi + i); i += 4;
+        strbuf_printf(sb, "jumpif 0x%08x,0x%08x\n", off, cond);
+
       } else if (cmd == PBI_GENCMD_LOAD_RCW_CS ||
                  cmd == PBI_GENCMD_LOAD_RCW_NOCS ||
                  cmd == PBI_GENCMD_LOAD_SEC_HDR ||
-                 cmd == PBI_GENCMD_LOAD_CSF_PTR ||
-                 cmd == PBI_GENCMD_JUMP ||
-                 cmd == PBI_GENCMD_JUMP_COND) {
+                 cmd == PBI_GENCMD_LOAD_CSF_PTR) {
         strbuf_printf(sb, "/* Disassemble not implemented for word 0x%08x */\n", word);
 
       } else {

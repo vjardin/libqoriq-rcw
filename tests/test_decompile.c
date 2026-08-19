@@ -780,84 +780,46 @@ test_decompile_roundtrip_poll(void **state) {
 }
 
 /*
- * Known gap, pinned deliberately: rcw_decompile.c emits
- * "loadcondition" for PBI command 0x14, but rcw_pbi.c has no such
- * mnemonic, so the decompiled source does NOT recompile: it fails
- * with "Unknown PBI command". Unlike the awrite case this is a loud
- * failure rather than silent corruption, which is why it is recorded
- * rather than worked around.
+ * test_decompile_loadcondition_does_not_recompile used to live here. It
+ * asserted that a PBI containing Load Condition (0x14) could NOT be
+ * recompiled, because the parser had no such mnemonic, and its comment
+ * said: "If parser support for loadcondition is added, this test will
+ * start failing: replace it with a byte-identity round-trip like the ones
+ * above."
  *
- * If parser support for loadcondition is added, this test will start
- * failing: replace it with a byte-identity round-trip like the ones
- * above.
+ * That support now exists, along with jump (0x84) and jumpif (0x85), so
+ * the premise is gone. The byte-identity round-trip it asked for is
+ * test_decompile_roundtrip_cond just below; encoding and the RM error
+ * checks are covered separately in test_cond.c.
  */
 static void
-test_decompile_loadcondition_does_not_recompile(void **state) {
+test_decompile_roundtrip_cond(void **state) {
   (void)state;
 
-  /* Hand-build a PBI: Load Condition (0x14) is 12 bytes. */
-  const char src[] =
-    "%size=1024\n"
-    "%pbiformat=2\n"
-    "%classicbitnumbers=1\n"
-    "%littleendian=1\n"
-    "%nocrc=1\n"
-    "SYS_PLL_RAT[6:2]\n"
-    "PBI_LENGTH[287:276]\n"
-    "SYS_PLL_RAT=7\n";
-
-  rcw_ctx_t *c1 = rcw_ctx_new();
-  assert_non_null(c1);
-  uint8_t *bin = NULL;
-  size_t bin_len = 0;
-  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), &bin, &bin_len),
-                   RCW_OK);
-
-  /* Splice a Load Condition command in front of the terminator. */
-  static const uint8_t loadcond[12] = {
-    0x00, 0x00, 0x14, 0x80,   /* 0x80140000, little-endian */
-    0x78, 0x56, 0x34, 0x12,
-    0x21, 0x43, 0x65, 0x87,
-  };
-  size_t spliced_len = bin_len + sizeof(loadcond);
-  uint8_t *spliced = malloc(spliced_len);
-  assert_non_null(spliced);
-  memcpy(spliced, bin, bin_len - 8);
-  memcpy(spliced + bin_len - 8, loadcond, sizeof(loadcond));
-  memcpy(spliced + bin_len - 8 + sizeof(loadcond), bin + bin_len - 8, 8);
-
-  rcw_ctx_t *c2 = rcw_ctx_new();
-  assert_non_null(c2);
-  assert_int_equal(rcw_parse(c2, seam_rcwi, strlen(seam_rcwi)), RCW_OK);
-
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
   char *out = NULL;
-  size_t out_len = 0;
-  assert_int_equal(rcw_decompile(c2, spliced, spliced_len, &out, &out_len),
-                   RCW_OK);
-  assert_non_null(strstr(out, "loadcondition 0x12345678,0x87654321"));
 
-  /* ... and that spelling is not accepted back. */
-  size_t comb_len = strlen(seam_rcwi) + out_len;
-  char *comb = malloc(comb_len + 1);
-  assert_non_null(comb);
-  memcpy(comb, seam_rcwi, strlen(seam_rcwi));
-  memcpy(comb + strlen(seam_rcwi), out, out_len);
-  comb[comb_len] = '\0';
+  seam_roundtrip("loadcondition 0x01e00100,0x000000ff\n"
+                 "jumpif 0x00000014,0x00000005\n"
+                 "jump 0x0000000c\n",
+                 &b1, &l1, &b2, &l2, &out);
 
-  rcw_ctx_t *c3 = rcw_ctx_new();
-  assert_non_null(c3);
-  uint8_t *bin2 = NULL;
-  size_t bin2_len = 0;
-  assert_int_equal(rcw_compile_buffer(c3, comb, comb_len, &bin2, &bin2_len),
-                   RCW_ERR_PBI_SYNTAX);
+  /* 12 (loadcondition) + 12 (jumpif) + 8 (jump) = 32 bytes of PBI. */
+  assert_int_equal(l1, 140 + 32 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
 
-  free(comb);
-  free(spliced);
+  assert_non_null(strstr(out, "\nloadcondition 0x01e00100,0x000000ff\n"));
+  assert_non_null(strstr(out, "\njumpif 0x00000014,0x00000005\n"));
+  assert_non_null(strstr(out, "\njump 0x0000000c\n"));
+  /* Previously these decoded as "Disassemble not implemented". */
+  assert_null(strstr(out, "Unknown word"));
+  assert_null(strstr(out, "not implemented"));
+
   rcw_free(out);
-  rcw_free(bin);
-  rcw_ctx_free(c1);
-  rcw_ctx_free(c2);
-  rcw_ctx_free(c3);
+  rcw_free(b1);
+  rcw_free(b2);
 }
 
 int
@@ -868,7 +830,7 @@ main(void) {
     cmocka_unit_test(test_decompile_roundtrip_awrite_widths),
     cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
     cmocka_unit_test(test_decompile_roundtrip_poll),
-    cmocka_unit_test(test_decompile_loadcondition_does_not_recompile),
+    cmocka_unit_test(test_decompile_roundtrip_cond),
     cmocka_unit_test(test_decompile_fields),
     cmocka_unit_test(test_decompile_buffer_with_header),
     cmocka_unit_test(test_decompile_buffer_no_header),
