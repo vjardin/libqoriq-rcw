@@ -261,7 +261,23 @@
 #define RCW_PBI_BUF_INIT_CAP     4096
 
 /* Maximum PBI parameters per command (awrite.b5 has the most: 5). */
-#define PBI_MAX_PARAMS           5
+/*
+ * Load Security Header (RM Table 41) carries 20 CSF words on one line, the
+ * largest operand count of any PBI command. Everything else needs <= 5.
+ */
+#define PBI_MAX_PARAMS           21
+/*
+ * Every command except Load Security Header takes at most 5 operands. The
+ * cap is enforced per-command rather than globally so that supplying extra
+ * parameters stays an ERROR instead of being silently dropped -- raising
+ * the global limit to fit the 20-word CSF header would have quietly
+ * weakened that for awrite.b5 and friends.
+ */
+#define PBI_STD_MAX_PARAMS       5
+#define PBI_CSF_HEADER_WORDS     20
+
+/* Longest path we will build when searching the -I list for a CSF file. */
+#define RCW_PATH_MAX             4096
 
 /*
  * .uboot subsection encoder constants.
@@ -360,6 +376,10 @@ struct rcw_ctx {
   /* Error detail buffer */
   char error_detail[RCW_ERROR_DETAIL_MAX];
 };
+/* rcw_csf.c -- read 20 hex CSF words from a file, honouring -I paths. */
+rcw_error_t rcw_csf_read_words(rcw_ctx_t *ctx, const char *path,
+                               uint32_t *out, size_t want);
+
 
 /*
  * Internal helpers

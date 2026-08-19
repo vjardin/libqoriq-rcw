@@ -855,6 +855,33 @@ test_decompile_roundtrip_density(void **state) {
   rcw_free(b2);
 }
 
+static void
+test_decompile_roundtrip_secure(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+
+  seam_roundtrip("loadsecurityheader 0x55550000,0x55550001,0x55550002,0x55550003,0x55550004,0x55550005,0x55550006,0x55550007,0x55550008,0x55550009,0x5555000a,0x5555000b,0x5555000c,0x5555000d,0x5555000e,0x5555000f,0x55550010,0x55550011,0x55550012,0x55550013\n"
+                 "loadboot1csfptr 0x18000000\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  /* 84 (security header) + 8 (csf pointer). */
+  assert_int_equal(l1, 140 + 92 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  assert_non_null(strstr(out, "\nloadsecurityheader 0x55550000,"));
+  assert_non_null(strstr(out, "\nloadboot1csfptr 0x18000000\n"));
+  assert_null(strstr(out, "Unknown word"));
+  assert_null(strstr(out, "not implemented"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -865,6 +892,7 @@ main(void) {
     cmocka_unit_test(test_decompile_roundtrip_poll),
     cmocka_unit_test(test_decompile_roundtrip_cond),
     cmocka_unit_test(test_decompile_roundtrip_density),
+    cmocka_unit_test(test_decompile_roundtrip_secure),
     cmocka_unit_test(test_decompile_fields),
     cmocka_unit_test(test_decompile_buffer_with_header),
     cmocka_unit_test(test_decompile_buffer_no_header),

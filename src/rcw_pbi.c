@@ -272,6 +272,30 @@ pbi_pack_word(rcw_ctx_t *ctx, uint32_t val) {
   return rcw_pbi_append(&ctx->pbi, buf, 4);
 }
 
+
+/*
+ * The CSF header can be given as a quoted file path instead of 20 inline
+ * words. Detect and extract that before the numeric parameter parser runs,
+ * since a path is not a number and would otherwise fail there.
+ */
+static bool
+line_has_quoted_arg(const char *line) {
+  return strchr(line, '"') != NULL;
+}
+
+static rcw_error_t
+extract_quoted_arg(const char *line, char *out, size_t out_sz) {
+  const char *a = strchr(line, '"');
+  if (!a)
+    return RCW_ERR_PBI_SYNTAX;
+  const char *b = strchr(a + 1, '"');
+  if (!b || (size_t)(b - a - 1) >= out_sz)
+    return RCW_ERR_PBI_SYNTAX;
+  memcpy(out, a + 1, (size_t)(b - a - 1));
+  out[b - a - 1] = '\0';
+  return RCW_OK;
+}
+
 /*
  * Parse a PBI command line and encode it.
  * Format: op[.suffix] param1[,param2[,...]]
@@ -286,7 +310,14 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
 
   /* Parse "op" or "op.suffix" */
   const char *p = line;
-  while (*p && isalpha((unsigned char)*p))
+  /*
+   * isalnum, not isalpha: "loadboot1csfptr" (RM 8.3.9 "Load Boot 1 CSF
+   * Header Pointer") carries a digit mid-mnemonic. Every pre-existing
+   * mnemonic is all-alpha, so this cannot change how any of them tokenise;
+   * the qoriq-rcw cross-validate suite proves that byte-for-byte across
+   * every pbiformat=2 board.
+   */
+  while (*p && isalnum((unsigned char)*p))
     p++;
 
   size_t oplen = (size_t)(p - line);
@@ -314,8 +345,21 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
   while (*p && isspace((unsigned char)*p))
     p++;
 
-  /* Parse comma-separated parameters */
-  if (*p) {
+  /*
+   * Parse comma-separated parameters.
+   *
+   * Skipped entirely when the argument is a quoted string: the only such
+   * command is loadsecurityheader with a CSF file path, and a path is not
+   * a number, so the evaluator below would reject it before the encoder
+   * ever sees it. The encoder re-reads the path off `line` itself. Any
+   * other command given a quoted argument simply sees zero parameters and
+   * fails with its own "requires N parameters" message.
+   */
+  /* Only Load Security Header may exceed the standard operand count. */
+  const int param_cap = (strcmp(op, "loadsecurityheader") == 0)
+      ? PBI_MAX_PARAMS : PBI_STD_MAX_PARAMS;
+
+  if (*p && strchr(p, '"') == NULL) {
     int n = snprintf(params_str, sizeof(params_str), "%s", p);
     if (n < 0 || (size_t)n >= sizeof(params_str)) {
       rcw_set_error(ctx,
@@ -326,10 +370,10 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     char *tok = params_str;
 
     while (tok && *tok) {
-      if (nparam >= PBI_MAX_PARAMS) {
+      if (nparam >= param_cap) {
         rcw_set_error(ctx,
             "Too many PBI parameters (max %d): %s",
-            PBI_MAX_PARAMS, line);
+            param_cap, line);
         return RCW_ERR_PBI_SYNTAX;
       }
 
@@ -512,6 +556,89 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     if (err != RCW_OK)
       return err;
     return pbi_pack_word(ctx, params[2]);
+
+  } else if (strcmp(op, "loadsecurityheader") == 0) {
+    /*
+     * LX2160A RM Table 41 "Load Security Header", 84 bytes:
+     *   word 0     HDR=0x80, CMD=0x20
+     *   words 1-20 CSF_WORD_0 .. CSF_WORD_19
+     *
+     * Required for secure boot only; a non-secure PBI never emits it. The
+     * 20 words are CSF header content produced by NXP's Code Signing Tool
+     * -- their layout is in the QorIQ Trust Architecture UG, not the RM,
+     * so they are carried verbatim and NOT interpreted here.
+     *
+     * Two source forms, both hex:
+     *   loadsecurityheader 0xw0,0xw1,...,0xw19     (20 inline words)
+     *   loadsecurityheader "csf_hdr.txt"           (hex text file)
+     * The file form resolves like #include: as given, then each -I path.
+     *
+     * NEVER EXECUTED ON nbxv3 SILICON. This board boots non-secure (ITS
+     * unburned, DBG_LVL=000), so the encoding is asserted against the RM
+     * table in tests and nothing more. Treat a first secure boot as the
+     * real validation.
+     */
+    uint32_t csf[PBI_CSF_HEADER_WORDS];
+
+    if (line_has_quoted_arg(line)) {
+      char path[RCW_PATH_MAX];
+      if (extract_quoted_arg(line, path, sizeof(path)) != RCW_OK) {
+        rcw_set_error(ctx,
+            "\"loadsecurityheader\" file argument is not a closed "
+            "quoted string: %s", line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+      err = rcw_csf_read_words(ctx, path, csf, PBI_CSF_HEADER_WORDS);
+      if (err != RCW_OK)
+        return err;   /* rcw_csf_read_words already set a precise message */
+    } else {
+      if (nparam != (int)PBI_CSF_HEADER_WORDS) {
+        rcw_set_error(ctx,
+            "\"loadsecurityheader\" needs exactly %d hex words or a "
+            "quoted file path, got %d: %s",
+            (int)PBI_CSF_HEADER_WORDS, nparam, line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+      for (size_t i = 0; i < PBI_CSF_HEADER_WORDS; i++)
+        csf[i] = params[i];
+    }
+
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_LOAD_SEC_HDR << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    for (size_t i = 0; i < PBI_CSF_HEADER_WORDS; i++) {
+      err = pbi_pack_word(ctx, csf[i]);
+      if (err != RCW_OK)
+        return err;
+    }
+    return RCW_OK;
+
+  } else if (strcmp(op, "loadboot1csfptr") == 0) {
+    if (nparam < 1) {
+      rcw_set_error(ctx,
+          "\"loadboot1csfptr\" requires 1 parameter (CSF pointer): %s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    /*
+     * LX2160A RM Table 42 "Load Boot 1 CSF Header Pointer", 8 bytes:
+     *   word 0  HDR=0x80, CMD=0x22
+     *   word 1  CSF_PTR -- must be 4-byte aligned (the RM's only check)
+     *
+     * Points at the CSF header authenticating the Boot 1 / SPL image.
+     * Secure boot only, and likewise never executed on this board.
+     */
+    if (params[0] % 4u != 0u) {
+      rcw_set_error(ctx,
+          "\"loadboot1csfptr\" pointer 0x%x must be 4-byte aligned "
+          "(RM Table 42): %s", params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (PBI_GENCMD_LOAD_CSF_PTR << PBI_CMD_SHIFT));
+    if (err != RCW_OK)
+      return err;
+    return pbi_pack_word(ctx, params[0]);
 
   } else if (strcmp(op, "ccsrcopy") == 0) {
     if (nparam < 3) {

@@ -184,10 +184,28 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
         uint32_t cond = unpack(pbi + i); i += 4;
         strbuf_printf(sb, "jumpif 0x%08x,0x%08x\n", off, cond);
 
+      } else if (cmd == PBI_GENCMD_LOAD_SEC_HDR &&
+                 i + 4 * PBI_CSF_HEADER_WORDS <= pbi_len) {
+        /*
+         * RM Table 41: 84 B, 20 CSF words. Always emitted in the inline
+         * form -- the source may have used a file, but the binary does not
+         * record which, and inline is what round-trips.
+         */
+        strbuf_printf(sb, "loadsecurityheader ");
+        for (size_t k = 0; k < PBI_CSF_HEADER_WORDS; k++) {
+          uint32_t w = unpack(pbi + i); i += 4;
+          strbuf_printf(sb, "%s0x%08x",
+                        (k == 0) ? "" : ",", w);
+        }
+        strbuf_printf(sb, "\n");
+
+      } else if (cmd == PBI_GENCMD_LOAD_CSF_PTR && i + 4 <= pbi_len) {
+        /* RM Table 42: 8 B, one 4-byte-aligned pointer. */
+        uint32_t ptr = unpack(pbi + i); i += 4;
+        strbuf_printf(sb, "loadboot1csfptr 0x%08x\n", ptr);
+
       } else if (cmd == PBI_GENCMD_LOAD_RCW_CS ||
-                 cmd == PBI_GENCMD_LOAD_RCW_NOCS ||
-                 cmd == PBI_GENCMD_LOAD_SEC_HDR ||
-                 cmd == PBI_GENCMD_LOAD_CSF_PTR) {
+                 cmd == PBI_GENCMD_LOAD_RCW_NOCS) {
         strbuf_printf(sb, "/* Disassemble not implemented for word 0x%08x */\n", word);
 
       } else {

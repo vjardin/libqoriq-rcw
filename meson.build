@@ -24,6 +24,7 @@ lib_sources = files(
   'src/rcw_bits.c',
   'src/rcw_parse.c',
   'src/rcw_pbi.c',
+  'src/rcw_csf.c',
   'src/rcw_uboot.c',
   'src/rcw_binary.c',
   'src/rcw_decompile.c',

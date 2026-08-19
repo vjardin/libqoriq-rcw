@@ -10,6 +10,7 @@ test_sources = {
   'test_decompile' : files('test_decompile.c'),
   'test_cond'      : files('test_cond.c'),
   'test_density'   : files('test_density.c'),
+  'test_secure'    : files('test_secure.c'),
 }
 
 foreach name, src : test_sources
