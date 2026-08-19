@@ -1,3 +1,21 @@
+libqoriq-rcw (1.1.0-1) unstable; urgency=medium
+
+  * PBI: the command set is now feature complete. New mnemonics for
+    conditional execution (loadcondition 0x14, jump 0x84, jumpif 0x85),
+    for the density commands (ccsrcopy 0x02, ccsrset / ccsrclear /
+    ccsrreplace 0x42) and for secure boot (loadsecurityheader 0x20,
+    loadboot1csfptr 0x22), on both the compile and decompile paths.
+  * PBI: poll now emits the four words described by the reference
+    manual.
+  * Decompile: awrite keeps its width suffix.
+  * Compile: warn when the generated PBL reaches 4096 bytes; 4092 is
+    the measured LX2160A Service Processor ceiling above which the SoC
+    stays silent.
+  * Tests: new test_cond, test_density and test_secure suites, plus
+    coverage for flush.
+
+ -- Vincent Jardin <vjardin@free.fr>  Thu, 20 Aug 2026 00:52:20 +0200
+
 libqoriq-rcw (1.0.2-1) unstable; urgency=medium
 
   * Build: pandoc man-page generation is now optional, gated by the
