@@ -322,6 +322,14 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
           free(stripped);
           free(trimmed);
 
+          if (closing == SUB_PBI) {
+            rcw_error_t err = rcw_pbi_block_end(ctx);
+            if (err != RCW_OK) {
+              free(uboot_buf);
+              return err;
+            }
+          }
+
           /* Flush a .uboot block at .end */
           if (closing == SUB_UBOOT) {
             rcw_error_t err = rcw_uboot_encode(ctx,
@@ -345,8 +353,13 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
       if (trimmed[0] != '\0' &&
           !(trimmed[0] == '/' && trimmed[1] == '*')) {
         rcw_error_t err;
+        const char *lname;
+        size_t llen;
         if (subsection == SUB_PBI) {
-          err = rcw_pbi_encode_line(ctx, trimmed);
+          if (rcw_pbi_label_line(trimmed, &lname, &llen))
+            err = rcw_pbi_define_label(ctx, lname, llen);
+          else
+            err = rcw_pbi_encode_line(ctx, trimmed);
         } else { /* SUB_UBOOT */
           err = ubuf_append(&uboot_buf, &uboot_len, &uboot_cap,
               trimmed, strlen(trimmed));
@@ -378,9 +391,10 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
 
     /* Subsection marker: .pbi or .uboot */
     if (line[0] == '.') {
-      if (strcmp(line + 1, "pbi") == 0)
+      if (strcmp(line + 1, "pbi") == 0) {
         subsection = SUB_PBI;
-      else if (strcmp(line + 1, "uboot") == 0)
+        rcw_pbi_block_begin(ctx);
+      } else if (strcmp(line + 1, "uboot") == 0)
         subsection = SUB_UBOOT;
       /* else: unknown subsection, ignore */
       free(line);
@@ -553,6 +567,8 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
   } else {
     free(uboot_buf);
   }
+  if (subsection == SUB_PBI)
+    return rcw_pbi_block_end(ctx);
 
   return RCW_OK;
 }

@@ -37,13 +37,13 @@ Supported platforms: LS1028, LS1088, LS2088, and LX2160 families (PBI format 2).
 - No runtime dependency on an external C compiler: preprocessing is
   handled in-process by [mcpp](http://mcpp.sourceforge.net/)
 - Image checking API
+- The PBI flow control (`loadc`, `jump`, `jumpc` and labels),
+  printed back with labels by the decompiler
 
 ## TODO
 
-Add the PBI flow-control opcodes `loadc` (0x14), `jump` (0x84) and
-`jumpc` (0x85) for both the compile and decompile paths. See
-[nxp-qoriq/rcw#5](https://github.com/nxp-qoriq/rcw/pull/5).
-Wait for the official landing into `rcw.py`.
+The legacy PBI formats (`%pbiformat=0` and `1`: P-, T- and B4-series,
+LS1012A, LS1021A, LS1043A, LS1046A) are not supported yet.
 
 ## Dependencies
 
@@ -80,7 +80,7 @@ This runs the cmocka unit test suites:
 | `test_uboot` | `.uboot` subsection encoder (u-boot.bin xxd dump) |
 | `test_binary` | End-to-end binary generation |
 | `test_decompile` | Decompilation and round-trip verification |
-| `test_cond`    | Conditional execution commands (0x14 / 0x84 / 0x85) |
+| `test_cond`    | Flow control: `loadc`, `jump`, `jumpc` and labels |
 | `test_density` | Density commands (0x02 / 0x42)     |
 | `test_secure`  | Secure boot commands (0x20 / 0x22) |
 | `test_decode`  | PBI command decoder                |

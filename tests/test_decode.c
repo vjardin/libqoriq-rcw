@@ -48,7 +48,7 @@ static const struct layout layouts[] = {
   { "loadrcw",            0x80100000, RCW_PBI_LOAD_RCW,      33,  0,          0   },
   { "loadrcw.nochecksum", 0x80110000, RCW_PBI_LOAD_RCW_NOCS, 33,  0,          0   },
   { "loadacwindow",       0x801201c0, RCW_PBI_LOADACWINDOW,  0,   0x1c0,      0   },
-  { "loadcondition",      0x80140000, RCW_PBI_LOADCONDITION, 2,   0,          0   },
+  { "loadc",              0x80140000, RCW_PBI_LOADCONDITION, 2,   0,          0   },
   { "loadsecurityheader", 0x80200000, RCW_PBI_LOAD_SEC_HDR,  20,  0,          0   },
   { "loadboot1csfptr",    0x80220000, RCW_PBI_LOAD_CSF_PTR,  1,   0,          0   },
   { "ccsrreplace.b4",     0x8042000b, RCW_PBI_CCSR_RMW,      3,   0x0b,       0   },
@@ -56,7 +56,7 @@ static const struct layout layouts[] = {
   { "poll.long",          0x80810000, RCW_PBI_POLL_LONG,     3,   0,          0   },
   { "wait",               0x80820064, RCW_PBI_WAIT,          0,   0x64,       0   },
   { "jump",               0x80840000, RCW_PBI_JUMP,          1,   0,          0   },
-  { "jumpif",             0x80850000, RCW_PBI_JUMP_COND,     2,   0,          0   },
+  { "jumpc",              0x80850000, RCW_PBI_JUMP_COND,     2,   0,          0   },
   { "crcstop",            0x808f0000, RCW_PBI_CRC_STOP,      1,   0,          0   },
   { "stop",               0x80ff0000, RCW_PBI_STOP,          1,   0,          0   },
 };
@@ -177,6 +177,9 @@ static void test_op_names(void **state) {
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_BLOCKCOPY), "blockcopy");
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_LOAD_SEC_HDR), "loadsecurityheader");
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_LOAD_CSF_PTR), "loadboot1csfptr");
+  assert_string_equal(rcw_pbi_op_name(RCW_PBI_LOADCONDITION), "loadc");
+  assert_string_equal(rcw_pbi_op_name(RCW_PBI_JUMP), "jump");
+  assert_string_equal(rcw_pbi_op_name(RCW_PBI_JUMP_COND), "jumpc");
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_CRC_STOP), "crcstop");
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_STOP), "stop");
   assert_string_equal(rcw_pbi_op_name(RCW_PBI_UNKNOWN), "unknown");
@@ -206,9 +209,9 @@ static void test_op_names(void **state) {
   "ccsrset.b4 0x01e00620,0x1\n" \
   "ccsrreplace.b2 0x01e00622,0xff,0x12\n" \
   "loadacwindow 0x1c0\n" \
-  "loadcondition 0x01e60130,0xff\n" \
+  "loadc 0x01e60130,0xff\n" \
   "jump 0x10\n" \
-  "jumpif 0x14,0x1\n" \
+  "jumpc 0x14,0x1\n" \
   "loadsecurityheader 0x12192001,0x200,0x101,0,0x800,0x100,0x600,0x1," \
       "0x1800d000,0,0,0,0,0,0,0,0,0,0,0\n" \
   "loadboot1csfptr 0x1800a000\n" \

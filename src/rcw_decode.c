@@ -101,7 +101,7 @@ rcw_pbi_op_name(rcw_pbi_op_t op) {
   case RCW_PBI_LOAD_RCW:      return "loadrcw";
   case RCW_PBI_LOAD_RCW_NOCS: return "loadrcw.nochecksum";
   case RCW_PBI_LOADACWINDOW:  return "loadacwindow";
-  case RCW_PBI_LOADCONDITION: return "loadcondition";
+  case RCW_PBI_LOADCONDITION: return "loadc";
   case RCW_PBI_LOAD_SEC_HDR:  return "loadsecurityheader";
   case RCW_PBI_LOAD_CSF_PTR:  return "loadboot1csfptr";
   case RCW_PBI_CCSR_RMW:      return "ccsrrmw";
@@ -109,7 +109,7 @@ rcw_pbi_op_name(rcw_pbi_op_t op) {
   case RCW_PBI_POLL_LONG:     return "poll.long";
   case RCW_PBI_WAIT:          return "wait";
   case RCW_PBI_JUMP:          return "jump";
-  case RCW_PBI_JUMP_COND:     return "jumpif";
+  case RCW_PBI_JUMP_COND:     return "jumpc";
   case RCW_PBI_CRC_STOP:      return "crcstop";
   case RCW_PBI_STOP:          return "stop";
   case RCW_PBI_CCSR_WRITE:    return "write";

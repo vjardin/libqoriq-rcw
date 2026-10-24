@@ -262,6 +262,14 @@ The text consumed by **rcw_compile_file**() (after preprocessing) and by
     **awrite** is **.b3**, one 4-byte word. The decompiler prints the
     same suffixes, so a wide write recompiles to the same bytes.
 
+    Flow control:
+    **loadc** *addr*,*mask* (Load Condition, 0x14),
+    **jump** *target* (0x84),
+    **jumpc** *target*,*condition* (Jump Conditional, 0x85),
+    **loadcondition** **jumpif** are accepted as aliases.
+    The target is a byte offset counted from the start of the jump
+    itself, a multiple of 4 above 8, or a label:
+
 **.uboot** / **.end**
 :   Embeds a u-boot binary image into the PBI stream for SPI/SD/NAND
     boot chains. The body is an **xxd**(1) hex dump of *u-boot.bin*

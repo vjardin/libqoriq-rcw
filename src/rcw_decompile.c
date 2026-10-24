@@ -62,23 +62,96 @@ strbuf_printf(strbuf_t *sb, const char *fmt, ...) {
   }
 }
 
+static size_t
+pbi_step(const uint8_t *pbi, size_t pbi_len, size_t i, int littleendian,
+         rcw_pbi_cmd_t *c, rcw_error_t *err) {
+  *err = rcw_pbi_decode(pbi + i, pbi_len - i, littleendian, c);
+  if (*err != RCW_OK)
+    return PBI_WORD_BYTES;
+  return c->size;
+}
+
+static long
+jump_target(size_t i, uint32_t offset, size_t pbi_len) {
+  uint64_t t = (uint64_t)i + offset;
+
+  if (t >= pbi_len || t % PBI_WORD_BYTES != 0)
+    return -1;
+  return (long)(t / PBI_WORD_BYTES);
+}
+
+static int *
+collect_labels(const uint8_t *pbi, size_t pbi_len, int littleendian) {
+  size_t nwords = pbi_len / PBI_WORD_BYTES;
+  if (nwords == 0)
+    return NULL;
+
+  int *label_of = malloc(nwords * sizeof(*label_of));
+  uint8_t *starts = calloc(nwords, 1);
+  if (!label_of || !starts) {
+    free(label_of);
+    free(starts);
+    return NULL;
+  }
+  for (size_t w = 0; w < nwords; w++)
+    label_of[w] = -1;
+
+  for (size_t i = 0; i + PBI_WORD_BYTES <= pbi_len;) {
+    rcw_pbi_cmd_t c;
+    rcw_error_t err;
+
+    starts[i / PBI_WORD_BYTES] = 1;
+    size_t step = pbi_step(pbi, pbi_len, i, littleendian, &c, &err);
+    if (err == RCW_OK && (c.op == RCW_PBI_JUMP || c.op == RCW_PBI_JUMP_COND)) {
+      long t = jump_target(i, c.args[0], pbi_len);
+      if (t >= 0)
+        label_of[t] = 0; /* a target; numbered below */
+    }
+    i += step;
+  }
+
+  int n = 0;
+  for (size_t w = 0; w < nwords; w++)
+    label_of[w] = (label_of[w] == 0 && starts[w]) ? n++ : -1;
+
+  free(starts);
+  return label_of;
+}
+
+/* "L3" for a labelled jump target, else the raw offset. */
+static void
+print_jump_target(strbuf_t *sb, const int *label_of, size_t pbi_len,
+                  size_t i, uint32_t offset) {
+  long t = jump_target(i, offset, pbi_len);
+
+  if (label_of && t >= 0 && label_of[t] >= 0)
+    strbuf_printf(sb, "L%d", label_of[t]);
+  else
+    strbuf_printf(sb, "0x%08x", offset);
+}
+
 static rcw_error_t
 disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
                 int littleendian) {
+  int *label_of = collect_labels(pbi, pbi_len, littleendian);
   size_t i = 0;
 
-  while (i + 4 <= pbi_len) {
+  while (i + PBI_WORD_BYTES <= pbi_len) {
     rcw_pbi_cmd_t c;
-    rcw_error_t err = rcw_pbi_decode(pbi + i, pbi_len - i, littleendian, &c);
+    rcw_error_t err;
+    size_t step = pbi_step(pbi, pbi_len, i, littleendian, &c, &err);
+
+    if (label_of && label_of[i / PBI_WORD_BYTES] >= 0)
+      strbuf_printf(sb, "L%d:\n", label_of[i / PBI_WORD_BYTES]);
 
     if (err == RCW_ERR_TRUNCATED && c.op == RCW_PBI_STOP) {
       strbuf_printf(sb, "/* Stop command */\n");
-      i += 4;
+      i += step;
       continue;
     }
     if (err != RCW_OK) {
       strbuf_printf(sb, "/* Unknown word 0x%08x */\n", c.word);
-      i += 4;
+      i += step;
       continue;
     }
 
@@ -137,7 +210,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
       break;
 
     case RCW_PBI_LOADCONDITION:
-      strbuf_printf(sb, "loadcondition 0x%08x,0x%08x\n", c.args[0], c.args[1]);
+      strbuf_printf(sb, "loadc 0x%08x,0x%08x\n", c.args[0], c.args[1]);
       break;
 
     case RCW_PBI_LOAD_SEC_HDR:
@@ -162,11 +235,15 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
       break;
 
     case RCW_PBI_JUMP:
-      strbuf_printf(sb, "jump 0x%08x\n", c.args[0]);
+      strbuf_printf(sb, "jump ");
+      print_jump_target(sb, label_of, pbi_len, i, c.args[0]);
+      strbuf_printf(sb, "\n");
       break;
 
     case RCW_PBI_JUMP_COND:
-      strbuf_printf(sb, "jumpif 0x%08x,0x%08x\n", c.args[0], c.args[1]);
+      strbuf_printf(sb, "jumpc ");
+      print_jump_target(sb, label_of, pbi_len, i, c.args[0]);
+      strbuf_printf(sb, ",0x%08x\n", c.args[1]);
       break;
 
     case RCW_PBI_CRC_STOP:
@@ -181,9 +258,10 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
       break;
     }
 
-    i += c.size;
+    i += step;
   }
 
+  free(label_of);
   return RCW_OK;
 }
 

@@ -335,13 +335,9 @@ rcw_eval_expr(const char *expr, uint32_t *result) {
   return rcw_eval_expr_why(expr, result, NULL, 0);
 }
 
-/*
- * Pack a 32-bit word in the current endianness and append to PBI buffer.
- */
-static rcw_error_t
-pbi_pack_word(rcw_ctx_t *ctx, uint32_t val) {
-  uint8_t buf[4];
-
+/* Store a 32-bit word in the image's word order. */
+static void
+pbi_put_word(const rcw_ctx_t *ctx, uint8_t *buf, uint32_t val) {
   if (ctx->vars.littleendian) {
     buf[0] = (uint8_t)(val & 0xFF);
     buf[1] = (uint8_t)((val >> 8) & 0xFF);
@@ -353,8 +349,191 @@ pbi_pack_word(rcw_ctx_t *ctx, uint32_t val) {
     buf[2] = (uint8_t)((val >> 8) & 0xFF);
     buf[3] = (uint8_t)(val & 0xFF);
   }
+}
 
-  return rcw_pbi_append(&ctx->pbi, buf, 4);
+/* Pack a 32-bit word in the current endianness and append to PBI buffer */
+static rcw_error_t
+pbi_pack_word(rcw_ctx_t *ctx, uint32_t val) {
+  uint8_t buf[PBI_WORD_BYTES];
+
+  pbi_put_word(ctx, buf, val);
+  return rcw_pbi_append(&ctx->pbi, buf, sizeof(buf));
+}
+
+void
+rcw_pbi_block_begin(rcw_ctx_t *ctx) {
+  ctx->label_count = 0;
+  ctx->fixup_count = 0;
+}
+
+bool
+rcw_pbi_label_line(const char *line, const char **name, size_t *len) {
+  const char *p = line;
+
+  while (isspace((unsigned char)*p))
+    p++;
+  if (!(isalpha((unsigned char)*p) || *p == '_'))
+    return false;
+  const char *start = p;
+  while (isalnum((unsigned char)*p) || *p == '_')
+    p++;
+  const char *stop = p;
+  while (isspace((unsigned char)*p))
+    p++;
+  if (*p != ':')
+    return false;
+  p++;
+  while (isspace((unsigned char)*p))
+    p++;
+  if (*p != '\0')
+    return false;
+
+  *name = start;
+  *len = (size_t)(stop - start);
+  return true;
+}
+
+static bool
+label_is(const char *label, const char *name, size_t len) {
+  return strlen(label) == len && memcmp(label, name, len) == 0;
+}
+
+rcw_error_t
+rcw_pbi_define_label(rcw_ctx_t *ctx, const char *name, size_t len) {
+  if (len >= RCW_LABEL_NAME_MAX) {
+    rcw_set_error(ctx, "Label name too long (max %d): %.*s",
+                  RCW_LABEL_NAME_MAX - 1, (int)len, name);
+    return RCW_ERR_PBI_SYNTAX;
+  }
+  for (size_t i = 0; i < ctx->label_count; i++) {
+    if (label_is(ctx->labels[i].name, name, len)) {
+      rcw_set_error(ctx, "Duplicate label \"%.*s\" in .pbi block", (int)len, name);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+  }
+  if (ctx->label_count >= RCW_MAX_LABELS) {
+    rcw_set_error(ctx, "Too many labels in one .pbi block (max %d)", RCW_MAX_LABELS);
+    return RCW_ERR_NOMEM;
+  }
+
+  rcw_label_t *l = &ctx->labels[ctx->label_count++];
+  memcpy(l->name, name, len);
+  l->name[len] = '\0';
+  l->offset = ctx->pbi.len;
+
+  /* The jumps that named it, encoded with OFFSET 0, get their distance. */
+  for (size_t i = 0; i < ctx->fixup_count;) {
+    rcw_fixup_t *fx = &ctx->fixups[i];
+
+    if (!label_is(fx->name, name, len)) {
+      i++;
+      continue;
+    }
+    size_t offset = l->offset - fx->insn;
+    if (offset <= PBI_JUMP_MIN_OFFSET) {
+      rcw_set_error(ctx,
+          "\"%s %s\" would jump %zu bytes, onto the word after itself; "
+          "the BootROM wants more than %d",
+          fx->op, fx->name, offset, PBI_JUMP_MIN_OFFSET);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    pbi_put_word(ctx, ctx->pbi.data + fx->insn + PBI_WORD_BYTES, (uint32_t)offset);
+    *fx = ctx->fixups[--ctx->fixup_count];
+  }
+
+  return RCW_OK;
+}
+
+rcw_error_t
+rcw_pbi_block_end(rcw_ctx_t *ctx) {
+  if (ctx->fixup_count > 0) {
+    const rcw_fixup_t *fx = &ctx->fixups[0];
+    rcw_set_error(ctx, "\"%s %s\": label \"%s\" is not defined in this .pbi block",
+                  fx->op, fx->name, fx->name);
+    ctx->label_count = 0;
+    ctx->fixup_count = 0;
+    return RCW_ERR_PBI_SYNTAX;
+  }
+  ctx->label_count = 0;
+  return RCW_OK;
+}
+
+static bool
+token_is_identifier(const char *tok, const char **start, size_t *len) {
+  while (isspace((unsigned char)*tok))
+    tok++;
+  if (!(isalpha((unsigned char)*tok) || *tok == '_'))
+    return false;
+  const char *s = tok;
+  while (isalnum((unsigned char)*tok) || *tok == '_')
+    tok++;
+  const char *e = tok;
+  while (isspace((unsigned char)*tok))
+    tok++;
+  if (*tok != '\0')
+    return false;
+  *start = s;
+  *len = (size_t)(e - s);
+  return true;
+}
+
+static rcw_error_t
+encode_jump(rcw_ctx_t *ctx, const char *op, const char *line, uint32_t cmd,
+            const char *label, const uint32_t *params, int nparam, int want) {
+  if (nparam < want) {
+    rcw_set_error(ctx,
+        "\"%s\" requires %d parameter%s (%s): %s",
+        op, want, want == 1 ? "" : "s",
+        want == 1 ? "byte offset or label" : "byte offset or label, condition",
+        line);
+    return RCW_ERR_PBI_SYNTAX;
+  }
+
+  size_t insn = ctx->pbi.len;
+  uint32_t offset = params[0];
+
+  if (label[0] != '\0') {
+    for (size_t i = 0; i < ctx->label_count; i++) {
+      if (strcmp(ctx->labels[i].name, label) == 0) {
+        rcw_set_error(ctx,
+            "\"%s %s\": the label is behind the jump, the SP jumps "
+            "forward only: %s", op, label, line);
+        return RCW_ERR_PBI_SYNTAX;
+      }
+    }
+    if (ctx->fixup_count >= RCW_MAX_LABELS) {
+      rcw_set_error(ctx, "Too many jumps to labels in one .pbi block (max %d)",
+                    RCW_MAX_LABELS);
+      return RCW_ERR_NOMEM;
+    }
+    rcw_fixup_t *fx = &ctx->fixups[ctx->fixup_count++];
+    snprintf(fx->name, sizeof(fx->name), "%s", label);
+    snprintf(fx->op, sizeof(fx->op), "%s", op);
+    fx->insn = insn;
+    offset = 0; /* patched by the label line */
+  } else {
+    if (offset % PBI_WORD_BYTES != 0) {
+      rcw_set_error(ctx,
+          "\"%s\" offset 0x%x is not 4-byte aligned: %s", op, offset, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (offset <= PBI_JUMP_MIN_OFFSET) {
+      rcw_set_error(ctx,
+          "\"%s\" offset 0x%x must be greater than %d (RM Table %s): %s",
+          op, offset, PBI_JUMP_MIN_OFFSET, want == 1 ? "46" : "47", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+  }
+
+  rcw_error_t err = pbi_pack_word(ctx, PBL_CMD_GENERAL | (cmd << PBI_CMD_SHIFT));
+  if (err != RCW_OK)
+    return err;
+  err = pbi_pack_word(ctx, offset);
+  if (err != RCW_OK)
+    return err;
+  if (want == 2)
+    return pbi_pack_word(ctx, params[1]);
+  return RCW_OK;
 }
 
 
@@ -389,6 +568,7 @@ rcw_error_t
 rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
   char op[32] = {0};
   char suffix[16] = {0};
+  char label[RCW_LABEL_NAME_MAX] = {0}; /* a jump's target, when named */
   uint32_t params[PBI_MAX_PARAMS];
   int nparam = 0;
 
@@ -443,6 +623,9 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
   const int param_cap = (strcmp(op, "awrite") == 0) ? PBI_AWRITE_MAX_PARAMS
       : (strcmp(op, "loadsecurityheader") == 0) ? (1 + PBI_CSF_HEADER_WORDS)
       : PBI_STD_MAX_PARAMS;
+  /* ... and only the jumps take a label where a number is expected. */
+  const bool is_jump = strcmp(op, "jump") == 0 || strcmp(op, "jumpc") == 0 ||
+                       strcmp(op, "jumpif") == 0;
 
   if (*p && strchr(p, '"') == NULL) {
     char *params_str = strdup(p);
@@ -475,6 +658,23 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
       }
       if (comma)
         *comma = '\0';
+
+      /* A jump's first operand may name a label instead of an offset */
+      const char *id;
+      size_t idlen;
+      if (is_jump && nparam == 0 && token_is_identifier(tok, &id, &idlen)) {
+        if (idlen >= sizeof(label)) {
+          rcw_set_error(ctx, "Label name too long (max %zu): %s",
+                        sizeof(label) - 1, line);
+          free(params_str);
+          return RCW_ERR_PBI_SYNTAX;
+        }
+        memcpy(label, id, idlen);
+        label[idlen] = '\0';
+        params[nparam++] = 0;
+        tok = comma ? comma + 1 : NULL;
+        continue;
+      }
 
       /* Evaluate expression */
       char why[RCW_EVAL_WHY_MAX];
@@ -831,10 +1031,10 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     /* Data word is present for all three; the SP ignores it unless REPLACE. */
     return pbi_pack_word(ctx, (ops == PBI_RMW_OPS_REPLACE) ? params[2] : 0u);
 
-  } else if (strcmp(op, "loadcondition") == 0) {
+  } else if (strcmp(op, "loadc") == 0 || strcmp(op, "loadcondition") == 0) {
     if (nparam < 2) {
       rcw_set_error(ctx,
-          "\"loadcondition\" requires 2 parameters (addr, mask): %s", line);
+          "\"%s\" requires 2 parameters (addr, mask): %s", op, line);
       return RCW_ERR_PBI_SYNTAX;
     }
     /*
@@ -843,8 +1043,7 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
      *   word 1  ADDR   -- read at PBI time, typically a CCSR register
      *   word 2  MASK   -- ANDed with the loaded value
      * The result is kept in an internal SP variable and consumed by the
-     * next conditional jump. Only "jumpif" consumes it today; the RM
-     * notes conditional jump is the only conditional command defined.
+     * next conditional jump.
      */
     err = pbi_pack_word(ctx,
         PBL_CMD_GENERAL | (PBI_GENCMD_LOADCONDITION << PBI_CMD_SHIFT));
@@ -856,78 +1055,10 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     return pbi_pack_word(ctx, params[1]);
 
   } else if (strcmp(op, "jump") == 0) {
-    if (nparam < 1) {
-      rcw_set_error(ctx,
-          "\"jump\" requires 1 parameter (byte offset): %s", line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    /*
-     * LX2160A RM Table 46 "Jump Command Format", 8 bytes:
-     *   word 0  HDR=0x80, CMD=0x84
-     *   word 1  OFFSET -- bytes forward from the start of THIS command
-     *
-     * FORWARD ONLY. The SP cannot jump backwards, so this cannot build a
-     * loop; it exists to skip a block, e.g. configuration for IP that a
-     * given personality does not use. The RM's error checks are "4-byte
-     * alignment" and "OFFSET greater than 8", both enforced here -- an
-     * offset of exactly 8 would target the word right after the command
-     * and is rejected by the SP, and a misaligned offset lands mid-command.
-     */
-    if (params[0] % 4u != 0u) {
-      rcw_set_error(ctx,
-          "\"jump\" offset 0x%x is not 4-byte aligned: %s",
-          params[0], line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    if (params[0] <= 8u) {
-      rcw_set_error(ctx,
-          "\"jump\" offset 0x%x must be greater than 8 (RM Table 46): %s",
-          params[0], line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    err = pbi_pack_word(ctx,
-        PBL_CMD_GENERAL | (PBI_GENCMD_JUMP << PBI_CMD_SHIFT));
-    if (err != RCW_OK)
-      return err;
-    return pbi_pack_word(ctx, params[0]);
+    return encode_jump(ctx, op, line, PBI_GENCMD_JUMP, label, params, nparam, 1);
 
-  } else if (strcmp(op, "jumpif") == 0) {
-    if (nparam < 2) {
-      rcw_set_error(ctx,
-          "\"jumpif\" requires 2 parameters (offset, condition): %s", line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    /*
-     * LX2160A RM Table 47 "Conditional Jump Command Format", 12 bytes:
-     *   word 0  HDR=0x80, CMD=0x85
-     *   word 1  OFFSET    -- bytes forward from the start of THIS command
-     *   word 2  CONDITION -- compared against the value most recently
-     *                        loaded by "loadcondition"
-     *
-     * Same forward-only restriction and the same two RM error checks as
-     * the unconditional jump. Must be preceded by a "loadcondition", or
-     * the SP compares against whatever the internal variable held.
-     */
-    if (params[0] % 4u != 0u) {
-      rcw_set_error(ctx,
-          "\"jumpif\" offset 0x%x is not 4-byte aligned: %s",
-          params[0], line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    if (params[0] <= 8u) {
-      rcw_set_error(ctx,
-          "\"jumpif\" offset 0x%x must be greater than 8 (RM Table 47): %s",
-          params[0], line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
-    err = pbi_pack_word(ctx,
-        PBL_CMD_GENERAL | (PBI_GENCMD_JUMP_COND << PBI_CMD_SHIFT));
-    if (err != RCW_OK)
-      return err;
-    err = pbi_pack_word(ctx, params[0]);
-    if (err != RCW_OK)
-      return err;
-    return pbi_pack_word(ctx, params[1]);
+  } else if (strcmp(op, "jumpc") == 0 || strcmp(op, "jumpif") == 0) {
+    return encode_jump(ctx, op, line, PBI_GENCMD_JUMP_COND, label, params, nparam, 2);
 
   } else if (strcmp(op, "blockcopy") == 0) {
     if (nparam < 4) {

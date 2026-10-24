@@ -86,6 +86,8 @@ ctx_reset_state(rcw_ctx_t *ctx) {
   ctx->vars.pbladdr = RCW_DEFAULT_PBLADDR;
   free(ctx->pbi.data);
   memset(&ctx->pbi, 0, sizeof(ctx->pbi));
+  ctx->label_count = 0;
+  ctx->fixup_count = 0;
   ctx->error_detail[0] = '\0';
 }
 

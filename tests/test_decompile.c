@@ -779,19 +779,7 @@ test_decompile_roundtrip_poll(void **state) {
   rcw_free(b2);
 }
 
-/*
- * test_decompile_loadcondition_does_not_recompile used to live here. It
- * asserted that a PBI containing Load Condition (0x14) could NOT be
- * recompiled, because the parser had no such mnemonic, and its comment
- * said: "If parser support for loadcondition is added, this test will
- * start failing: replace it with a byte-identity round-trip like the ones
- * above."
- *
- * That support now exists, along with jump (0x84) and jumpif (0x85), so
- * the premise is gone. The byte-identity round-trip it asked for is
- * test_decompile_roundtrip_cond just below; encoding and the RM error
- * checks are covered separately in test_cond.c.
- */
+/* Flow control round-trips */
 static void
 test_decompile_roundtrip_cond(void **state) {
   (void)state;
@@ -800,22 +788,75 @@ test_decompile_roundtrip_cond(void **state) {
   size_t l1 = 0, l2 = 0;
   char *out = NULL;
 
-  seam_roundtrip("loadcondition 0x01e00100,0x000000ff\n"
-                 "jumpif 0x00000014,0x00000005\n"
+  seam_roundtrip("loadc 0x01e00100,0x000000ff\n"
+                 "jumpc 0x00000014,0x00000005\n"
                  "jump 0x0000000c\n",
                  &b1, &l1, &b2, &l2, &out);
 
-  /* 12 (loadcondition) + 12 (jumpif) + 8 (jump) = 32 bytes of PBI. */
+  /* 12 (loadc) + 12 (jumpc) + 8 (jump) = 32 bytes of PBI. */
   assert_int_equal(l1, 140 + 32 + 8);
   assert_int_equal(l2, l1);
   assert_memory_equal(b1, b2, l1);
 
-  assert_non_null(strstr(out, "\nloadcondition 0x01e00100,0x000000ff\n"));
-  assert_non_null(strstr(out, "\njumpif 0x00000014,0x00000005\n"));
+  assert_non_null(strstr(out, "\nloadc 0x01e00100,0x000000ff\n"));
+  assert_non_null(strstr(out, "\njumpc L0,0x00000005\n"));
   assert_non_null(strstr(out, "\njump 0x0000000c\n"));
-  /* Previously these decoded as "Disassemble not implemented". */
+  assert_non_null(strstr(out, "\nL0:\n/* Stop command */\n"));
   assert_null(strstr(out, "Unknown word"));
   assert_null(strstr(out, "not implemented"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
+/* The auto-boot block of lx2160asi/bootlocptr_auto.rcw */
+static void
+test_decompile_labels_as_rcwpy(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+
+  seam_roundtrip("loadc 0x01e00000,(0xf<<23)\n"
+                 "jumpc sdhc1_boot,(0x8<<23)\n"
+                 "jump sdhc1_done\n"
+                 "sdhc1_boot:\n"
+                 "blockcopy 0x08,0x0000a000,0x1800d000,0x00020000\n"
+                 "write 0x01e00400,0x1800d000\n"
+                 "sdhc1_done:\n"
+                 "jumpc xspi_boot,(0xf<<23)\n"
+                 "jump xspi_done\n"
+                 "xspi_boot:\n"
+                 "blockcopy 0x0f,0x20009000,0x1800d000,0x00020000\n"
+                 "write 0x01e00400,0x1800d000\n"
+                 "xspi_done:\n",
+                 &b1, &l1, &b2, &l2, &out);
+
+  /* 12 + (12 + 8 + 16 + 8) * 2 = 100 bytes of PBI */
+  assert_int_equal(l1, 140 + 100 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  static const char want[] =
+    "\n.pbi\n"
+    "loadc 0x01e00000,0x07800000\n"
+    "jumpc L0,0x04000000\n"
+    "jump L1\n"
+    "L0:\n"
+    "blockcopy 0x08,0x0000a000,0x1800d000,0x00020000\n"
+    "write 0x01e00400,0x1800d000\n"
+    "L1:\n"
+    "jumpc L2,0x07800000\n"
+    "jump L3\n"
+    "L2:\n"
+    "blockcopy 0x0f,0x20009000,0x1800d000,0x00020000\n"
+    "write 0x01e00400,0x1800d000\n"
+    "L3:\n"
+    "/* Stop command */\n"
+    ".end\n";
+  assert_non_null(strstr(out, want));
 
   rcw_free(out);
   rcw_free(b1);
@@ -936,6 +977,7 @@ main(void) {
     cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
     cmocka_unit_test(test_decompile_roundtrip_poll),
     cmocka_unit_test(test_decompile_roundtrip_cond),
+    cmocka_unit_test(test_decompile_labels_as_rcwpy),
     cmocka_unit_test(test_decompile_roundtrip_density),
     cmocka_unit_test(test_decompile_roundtrip_secure),
     cmocka_unit_test(test_decompile_fields),

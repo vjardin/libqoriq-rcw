@@ -22,6 +22,8 @@
 #define RCW_MAX_INCLUDE_PATHS 32
 #define RCW_FIELD_NAME_MAX   64
 #define RCW_ERROR_DETAIL_MAX 512
+#define RCW_MAX_LABELS      128
+#define RCW_LABEL_NAME_MAX   64
 
 /*
  * Fixed RCW size for pbiformat=2 platforms.
@@ -276,6 +278,7 @@ _Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagre
 #define PBI_GENCMD_WAIT          0x82 /* Section 8.3.12: Wait N iterations       */
 #define PBI_GENCMD_JUMP          0x84 /* Section 8.3.13: Jump forward            */
 #define PBI_GENCMD_JUMP_COND     0x85 /* Section 8.3.14: Conditional Jump        */
+#define PBI_JUMP_MIN_OFFSET      8
 #define PBI_GENCMD_CRC_STOP      0x8F /* Section 8.3.15: CRC and Stop            */
 #define PBI_GENCMD_STOP          0xFF /* Section 8.3.16: Stop (no CRC)           */
 
@@ -408,6 +411,17 @@ typedef struct {
   size_t cap;
 } rcw_pbi_buf_t;
 
+typedef struct {
+  char name[RCW_LABEL_NAME_MAX];
+  size_t offset; /* byte offset in ctx->pbi */
+} rcw_label_t;
+
+typedef struct {
+  char name[RCW_LABEL_NAME_MAX];
+  size_t insn;   /* byte offset of the jump command in ctx->pbi */
+  char op[8];    /* its mnemonic, for the message */
+} rcw_fixup_t;
+
 /*
  * Full context.
  */
@@ -429,6 +443,11 @@ struct rcw_ctx {
   rcw_symtab_t symbols;
   rcw_vars_t vars;
   rcw_pbi_buf_t pbi;
+
+  rcw_label_t labels[RCW_MAX_LABELS];
+  size_t label_count;
+  rcw_fixup_t fixups[RCW_MAX_LABELS];
+  size_t fixup_count;
 
   /* Error detail buffer */
   char error_detail[RCW_ERROR_DETAIL_MAX];
@@ -456,6 +475,10 @@ rcw_error_t rcw_parse_literal(const char *s, const char **end, uint64_t *out);
 
 /* rcw_pbi.c */
 rcw_error_t rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line);
+void rcw_pbi_block_begin(rcw_ctx_t *ctx);
+bool rcw_pbi_label_line(const char *line, const char **name, size_t *len);
+rcw_error_t rcw_pbi_define_label(rcw_ctx_t *ctx, const char *name, size_t len);
+rcw_error_t rcw_pbi_block_end(rcw_ctx_t *ctx);
 rcw_error_t rcw_eval_expr(const char *expr, uint32_t *result);
 #define RCW_EVAL_WHY_MAX 96
 rcw_error_t rcw_eval_expr_why(const char *expr, uint32_t *result, char *why, size_t why_len);
