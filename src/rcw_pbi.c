@@ -7,7 +7,6 @@
  */
 
 #include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,32 +16,29 @@
 
 #include "rcw_internal.h"
 
-/*
- * Maximum nesting depth of parens / unary ops in the expression
- * evaluator. mcpp-expanded bitfield expressions never go past depth
- * ~5 in real .rcw inputs; 64 is generous and bounds adversarial
- * inputs like "((((...))))" that would otherwise blow the C stack.
- */
+/* Operand expressions à la Python */
 #define RCW_EVAL_MAX_DEPTH 64
-
-/*
- * Minimal recursive descent expression evaluator.
- *
- * Handles: integer literals as Python reads them (decimal, 0x, 0o, 0b;
- * see rcw_parse_literal), parentheses,
- * and operators: + - * / & | ^ << >> ~
- *
- * Needed because the preprocessor expands macros to expressions like:
- *   (0x1ea0000 + (0x40 * (0)) + 0x1200)
- * which rcw.py handles via eval().
- */
 
 typedef struct {
   const char *pos;
   const char *end;
-  rcw_error_t err;
   int depth;
+  bool failed;
+  char why[RCW_EVAL_WHY_MAX];
 } eval_state_t;
+
+__attribute__((format(printf, 2, 3)))
+static void
+eval_fail(eval_state_t *st, const char *fmt, ...) {
+  va_list ap;
+
+  if (st->failed)
+    return; /* the first reason is the useful one */
+  st->failed = true;
+  va_start(ap, fmt);
+  vsnprintf(st->why, sizeof(st->why), fmt, ap);
+  va_end(ap);
+}
 
 static void
 skip_ws(eval_state_t *st) {
@@ -50,189 +46,291 @@ skip_ws(eval_state_t *st) {
     st->pos++;
 }
 
-static uint32_t eval_expr(eval_state_t *st);
+/* The operator at the cursor, if it is the one wanted, is consumed. */
+static bool
+eval_accept(eval_state_t *st, const char *op) {
+  size_t n = strlen(op);
 
-static uint32_t
-eval_primary(eval_state_t *st) {
   skip_ws(st);
+  if ((size_t)(st->end - st->pos) < n || memcmp(st->pos, op, n) != 0)
+    return false;
+  /* "<<" is not "<", "**" is not "*", "//" is not "/" */
+  if (n == 1 && st->pos + 1 < st->end && st->pos[1] == op[0])
+    return false;
+  st->pos += n;
+  return true;
+}
 
-  if (st->pos >= st->end) {
-    st->err = RCW_ERR_PBI_SYNTAX;
+static int64_t
+eval_floordiv(eval_state_t *st, int64_t a, int64_t d) {
+  if (d == 0) {
+    eval_fail(st, "division by zero");
     return 0;
   }
+  if (a == INT64_MIN && d == -1) {
+    eval_fail(st, "value does not fit 64 bits");
+    return 0;
+  }
+  int64_t q = a / d;
+  if ((a % d) != 0 && ((a < 0) != (d < 0)))
+    q--;
+  return q;
+}
 
+static int64_t
+eval_mod(eval_state_t *st, int64_t a, int64_t d) {
+  if (d == 0) {
+    eval_fail(st, "division by zero");
+    return 0;
+  }
+  if (a == INT64_MIN && d == -1)
+    return 0;
+  int64_t r = a % d;
+  if (r != 0 && ((r < 0) != (d < 0)))
+    r += d;
+  return r;
+}
+
+static int64_t
+eval_pow(eval_state_t *st, int64_t base, int64_t exp) {
+  int64_t r = 1;
+
+  if (exp < 0) {
+    eval_fail(st, "negative exponent"); /* a float in Python */
+    return 0;
+  }
+  while (exp > 0) {
+    if ((exp & 1) && __builtin_mul_overflow(r, base, &r)) {
+      eval_fail(st, "value does not fit 64 bits");
+      return 0;
+    }
+    exp >>= 1;
+    if (exp > 0 && __builtin_mul_overflow(base, base, &base)) {
+      eval_fail(st, "value does not fit 64 bits");
+      return 0;
+    }
+  }
+  return r;
+}
+
+static int64_t
+eval_shl(eval_state_t *st, int64_t a, int64_t n) {
+  int64_t r;
+
+  if (n < 0) {
+    eval_fail(st, "negative shift count");
+    return 0;
+  }
+  if (a == 0)
+    return 0;
+  if (n >= 63 || __builtin_mul_overflow(a, (int64_t)1 << n, &r)) {
+    eval_fail(st, "value does not fit 64 bits");
+    return 0;
+  }
+  return r;
+}
+
+static int64_t
+eval_shr(eval_state_t *st, int64_t a, int64_t n) {
+  if (n < 0) {
+    eval_fail(st, "negative shift count");
+    return 0;
+  }
+  if (n >= 63)
+    return a < 0 ? -1 : 0;
+  return eval_floordiv(st, a, (int64_t)1 << n);
+}
+
+static int64_t eval_or(eval_state_t *st);
+static int64_t eval_unary(eval_state_t *st);
+
+static int64_t
+eval_primary(eval_state_t *st) {
+  int64_t v = 0;
+
+  skip_ws(st);
+  if (st->pos >= st->end) {
+    eval_fail(st, "operand expected");
+    return 0;
+  }
   if (++st->depth > RCW_EVAL_MAX_DEPTH) {
-    st->err = RCW_ERR_PBI_SYNTAX;
+    eval_fail(st, "nested too deep");
     --st->depth;
     return 0;
   }
 
-  uint32_t result = 0;
-
   if (*st->pos == '(') {
     st->pos++;
-    result = eval_expr(st);
+    v = eval_or(st);
     skip_ws(st);
     if (st->pos < st->end && *st->pos == ')')
       st->pos++;
-  } else if (*st->pos == '-') {
-    st->pos++;
-    result = (uint32_t)(-(int32_t)eval_primary(st));
-  } else if (*st->pos == '~') {
-    st->pos++;
-    result = ~eval_primary(st);
+    else
+      eval_fail(st, "')' expected");
   } else if (isdigit((unsigned char)*st->pos)) {
-    const char *endptr;
-    uint64_t uv;
-    if (rcw_parse_literal(st->pos, &endptr, &uv) != RCW_OK || uv > UINT32_MAX) {
-      st->err = RCW_ERR_PBI_SYNTAX;
-      endptr = st->pos + 1;
+    const char *endp;
+    uint64_t u;
+
+    if (rcw_parse_literal(st->pos, &endp, &u) != RCW_OK || u > INT64_MAX)
+      eval_fail(st, "bad number at '%.12s'", st->pos);
+    else {
+      st->pos = endp;
+      v = (int64_t)u;
     }
-    st->pos = endptr;
-    result = (uint32_t)uv;
   } else {
-    st->err = RCW_ERR_PBI_SYNTAX;
+    eval_fail(st, "unexpected '%c'", *st->pos);
   }
 
   --st->depth;
-  return result;
+  return v;
 }
 
-static uint32_t
-eval_mul(eval_state_t *st) {
-  uint32_t v = eval_primary(st);
+static int64_t
+eval_power(eval_state_t *st) {
+  int64_t v = eval_primary(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos >= st->end)
-      break;
-    if (*st->pos == '*') {
-      st->pos++;
-      v *= eval_primary(st);
-    } else if (*st->pos == '/') {
-      st->pos++;
-      uint32_t d = eval_primary(st);
-      if (d != 0)
-        v /= d;
+  if (!st->failed && eval_accept(st, "**"))
+    v = eval_pow(st, v, eval_unary(st));
+  return v;
+}
+
+static int64_t
+eval_unary(eval_state_t *st) {
+  skip_ws(st);
+  if (st->pos < st->end && (*st->pos == '-' || *st->pos == '+' || *st->pos == '~')) {
+    char op = *st->pos++;
+
+    if (++st->depth > RCW_EVAL_MAX_DEPTH) {
+      eval_fail(st, "nested too deep");
+      --st->depth;
+      return 0;
+    }
+    int64_t v = eval_unary(st);
+    --st->depth;
+    if (op == '-') {
+      if (v == INT64_MIN) {
+        eval_fail(st, "value does not fit 64 bits");
+        return 0;
+      }
+      return -v;
+    }
+    if (op == '~')
+      return ~v;
+    return v;
+  }
+  return eval_power(st);
+}
+
+static int64_t
+eval_term(eval_state_t *st) {
+  int64_t v = eval_unary(st);
+
+  while (!st->failed) {
+    if (eval_accept(st, "*")) {
+      if (__builtin_mul_overflow(v, eval_unary(st), &v))
+        eval_fail(st, "value does not fit 64 bits");
+    } else if (eval_accept(st, "//")) {
+      v = eval_floordiv(st, v, eval_unary(st));
+    } else if (eval_accept(st, "%")) {
+      v = eval_mod(st, v, eval_unary(st));
+    } else if (eval_accept(st, "/")) {
+      eval_fail(st, "'/' is a float division in Python, use '//'");
     } else {
       break;
     }
   }
-
   return v;
 }
 
-static uint32_t
-eval_add(eval_state_t *st) {
-  uint32_t v = eval_mul(st);
+static int64_t
+eval_sum(eval_state_t *st) {
+  int64_t v = eval_term(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos >= st->end)
-      break;
-    if (*st->pos == '+') {
-      st->pos++;
-      v += eval_mul(st);
-    } else if (*st->pos == '-') {
-      st->pos++;
-      v -= eval_mul(st);
+  while (!st->failed) {
+    if (eval_accept(st, "+")) {
+      if (__builtin_add_overflow(v, eval_term(st), &v))
+        eval_fail(st, "value does not fit 64 bits");
+    } else if (eval_accept(st, "-")) {
+      if (__builtin_sub_overflow(v, eval_term(st), &v))
+        eval_fail(st, "value does not fit 64 bits");
     } else {
       break;
     }
   }
-
   return v;
 }
 
-static uint32_t
+static int64_t
 eval_shift(eval_state_t *st) {
-  uint32_t v = eval_add(st);
+  int64_t v = eval_sum(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos + 1 < st->end && st->pos[0] == '<' &&
-        st->pos[1] == '<') {
-      st->pos += 2;
-      uint32_t cnt = eval_add(st);
-      v = (cnt >= 32) ? 0u : (v << cnt);
-    } else if (st->pos + 1 < st->end && st->pos[0] == '>' &&
-               st->pos[1] == '>') {
-      st->pos += 2;
-      uint32_t cnt = eval_add(st);
-      v = (cnt >= 32) ? 0u : (v >> cnt);
-    } else {
+  while (!st->failed) {
+    if (eval_accept(st, "<<"))
+      v = eval_shl(st, v, eval_sum(st));
+    else if (eval_accept(st, ">>"))
+      v = eval_shr(st, v, eval_sum(st));
+    else
       break;
-    }
   }
-
   return v;
 }
 
-static uint32_t
-eval_bitand(eval_state_t *st) {
-  uint32_t v = eval_shift(st);
+static int64_t
+eval_and(eval_state_t *st) {
+  int64_t v = eval_shift(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos < st->end && *st->pos == '&' &&
-        (st->pos + 1 >= st->end || st->pos[1] != '&')) {
-      st->pos++;
-      v &= eval_shift(st);
-    } else {
-      break;
-    }
-  }
-
+  while (!st->failed && eval_accept(st, "&"))
+    v &= eval_shift(st);
   return v;
 }
 
-static uint32_t
-eval_bitxor(eval_state_t *st) {
-  uint32_t v = eval_bitand(st);
+static int64_t
+eval_xor(eval_state_t *st) {
+  int64_t v = eval_and(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos < st->end && *st->pos == '^') {
-      st->pos++;
-      v ^= eval_bitand(st);
-    } else {
-      break;
-    }
-  }
-
+  while (!st->failed && eval_accept(st, "^"))
+    v ^= eval_and(st);
   return v;
 }
 
-static uint32_t
-eval_expr(eval_state_t *st) {
-  uint32_t v = eval_bitxor(st);
+static int64_t
+eval_or(eval_state_t *st) {
+  int64_t v = eval_xor(st);
 
-  for (;;) {
-    skip_ws(st);
-    if (st->pos < st->end && *st->pos == '|' &&
-        (st->pos + 1 >= st->end || st->pos[1] != '|')) {
-      st->pos++;
-      v |= eval_bitxor(st);
-    } else {
-      break;
-    }
-  }
-
+  while (!st->failed && eval_accept(st, "|"))
+    v |= eval_xor(st);
   return v;
 }
 
 rcw_error_t
-rcw_eval_expr(const char *expr, uint32_t *result) {
+rcw_eval_expr_why(const char *expr, uint32_t *result, char *why, size_t why_len) {
   eval_state_t st = {
     .pos = expr,
     .end = expr + strlen(expr),
-    .err = RCW_OK,
-    .depth = 0,
   };
 
-  *result = eval_expr(&st);
+  int64_t v = eval_or(&st);
 
-  return st.err;
+  if (!st.failed) {
+    skip_ws(&st);
+    if (st.pos < st.end)
+      eval_fail(&st, "unexpected '%.12s'", st.pos);
+  }
+  if (!st.failed && (v < 0 || v > (int64_t)UINT32_MAX))
+    eval_fail(&st, "%lld does not fit a 32-bit word", (long long)v);
+
+  if (st.failed) {
+    if (why && why_len)
+      snprintf(why, why_len, "%s", st.why);
+    return RCW_ERR_PBI_SYNTAX;
+  }
+  *result = (uint32_t)v;
+  return RCW_OK;
+}
+
+rcw_error_t
+rcw_eval_expr(const char *expr, uint32_t *result) {
+  return rcw_eval_expr_why(expr, result, NULL, 0);
 }
 
 /*
@@ -380,11 +478,12 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
         *comma = '\0';
 
       /* Evaluate expression */
-      rcw_error_t err = rcw_eval_expr(tok, &params[nparam]);
+      char why[RCW_EVAL_WHY_MAX];
+      rcw_error_t err = rcw_eval_expr_why(tok, &params[nparam], why, sizeof(why));
       if (err != RCW_OK) {
         rcw_set_error(ctx,
-            "Cannot evaluate PBI parameter '%s' in: %s",
-            tok, line);
+            "Cannot evaluate PBI parameter '%s': %s, in: %s",
+            tok, why, line);
         return err;
       }
       nparam++;

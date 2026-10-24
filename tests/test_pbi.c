@@ -344,27 +344,138 @@ test_eval_recursion_capped(void **state) {
 }
 
 /*
- * A5 - shifts with count >= 32 are C undefined behavior on uint32_t.
- * The evaluator must clamp them (we use "result = 0").
+ * Shifts are Python's: "1 << 32" is 4294967296, which struct.pack('L')
+ * refuses. The intermediate is wider
+ * than the word, so a shift back brings it into range again.
  */
 static void
 test_eval_shift_count_overflow(void **state) {
   (void)state;
   uint32_t r;
 
-  /* 1 << 32 - UB on a uint32_t; clamp to 0 instead */
-  assert_int_equal(rcw_eval_expr("1 << 32", &r), RCW_OK);
-  assert_int_equal(r, 0);
-
-  /* 0xFFFFFFFF >> 32 - same issue, clamp to 0 */
+  assert_int_equal(rcw_eval_expr("1 << 32", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("(1 << 32) >> 1", &r), RCW_OK);
+  assert_int_equal(r, 0x80000000u);
   assert_int_equal(rcw_eval_expr("0xFFFFFFFF >> 32", &r), RCW_OK);
   assert_int_equal(r, 0);
+  assert_int_equal(rcw_eval_expr("1 << -1", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1 << 63", &r), RCW_ERR_PBI_SYNTAX);
 
   /* Sanity: legal shifts still work */
   assert_int_equal(rcw_eval_expr("1 << 31", &r), RCW_OK);
   assert_int_equal(r, 0x80000000u);
   assert_int_equal(rcw_eval_expr("0xFFFFFFFF >> 31", &r), RCW_OK);
   assert_int_equal(r, 1);
+}
+
+/*
+ * The whole string must be one Python expression.
+ * Text the grammar does not consume used to be
+ * ignored here, so "0x5 junk" compiled as 5 and "0x10%3" as 0x10.
+ */
+static void
+test_eval_rejects_trailing_text(void **state) {
+  (void)state;
+  uint32_t r;
+
+  assert_int_equal(rcw_eval_expr("0x5 junk", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("0x10 0x20", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("0x10 %", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("(1", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1)", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1 ? 2 : 3", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1 == 1", &r), RCW_ERR_PBI_SYNTAX);
+}
+
+/* Python precedence and the operators eval() offers on integers. */
+static void
+test_eval_python_operators(void **state) {
+  (void)state;
+  uint32_t r;
+
+  assert_int_equal(rcw_eval_expr("7 % 3", &r), RCW_OK);
+  assert_int_equal(r, 1);
+  assert_int_equal(rcw_eval_expr("0x10 % 3", &r), RCW_OK);
+  assert_int_equal(r, 1);
+  /* floor division: -7 // 2 is -4 in Python, not -3 */
+  assert_int_equal(rcw_eval_expr("-7 // 2 + 10", &r), RCW_OK);
+  assert_int_equal(r, 6);
+  assert_int_equal(rcw_eval_expr("-7 % 2", &r), RCW_OK);
+  assert_int_equal(r, 1);
+  assert_int_equal(rcw_eval_expr("2 ** 10", &r), RCW_OK);
+  assert_int_equal(r, 1024);
+  assert_int_equal(rcw_eval_expr("2 ** 31", &r), RCW_OK);
+  assert_int_equal(r, 0x80000000u);
+  /* ** binds tighter than *, shifts bind looser than + */
+  assert_int_equal(rcw_eval_expr("2 * 3 ** 2", &r), RCW_OK);
+  assert_int_equal(r, 18);
+  assert_int_equal(rcw_eval_expr("4 - 2 ** 2", &r), RCW_OK);
+  assert_int_equal(r, 0);
+  assert_int_equal(rcw_eval_expr("1 + 2 << 3", &r), RCW_OK);
+  assert_int_equal(r, 24);
+  /* | ^ & from loosest to tightest */
+  assert_int_equal(rcw_eval_expr("1 | 2 ^ 3 & 4", &r), RCW_OK);
+  assert_int_equal(r, 3);
+  assert_int_equal(rcw_eval_expr("+5", &r), RCW_OK);
+  assert_int_equal(r, 5);
+  assert_int_equal(rcw_eval_expr("-1 + 2", &r), RCW_OK);
+  assert_int_equal(r, 1);
+  assert_int_equal(rcw_eval_expr("~0 & 0xff", &r), RCW_OK);
+  assert_int_equal(r, 0xff);
+  assert_int_equal(rcw_eval_expr("(0xf << 23)", &r), RCW_OK);
+  assert_int_equal(r, 0x07800000u);
+}
+
+/*
+ * struct.pack('L') takes 0..0xFFFFFFFF and nothing else, and Python has
+ * no 32-bit wrap.
+ */
+static void
+test_eval_rejects_what_struct_pack_rejects(void **state) {
+  (void)state;
+  uint32_t r;
+
+  assert_int_equal(rcw_eval_expr("0xffffffff + 1", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("2 ** 32", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("~0", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("-1", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("0x10 / 4", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("2 ** -1", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1 % 0", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("1 // 0", &r), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_eval_expr("0xffffffff * 0xffffffff * 0xffffffff", &r),
+                   RCW_ERR_PBI_SYNTAX);
+
+  /* a 64-bit detour is fine as long as the result fits */
+  assert_int_equal(rcw_eval_expr("0xffffffff + 1 - 1", &r), RCW_OK);
+  assert_int_equal(r, 0xffffffffu);
+  assert_int_equal(rcw_eval_expr("0xffffffff * 0x10 // 0x10", &r), RCW_OK);
+  assert_int_equal(r, 0xffffffffu);
+}
+
+/* The encoder names the operand and the reason. */
+static void
+test_pbi_operand_error_is_explained(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+  char why[RCW_EVAL_WHY_MAX];
+  uint32_t r;
+
+  assert_int_equal(rcw_pbi_encode_line(ctx, "write 0x1e00400,0x5 junk"),
+                   RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, 0);
+  assert_non_null(strstr(rcw_ctx_last_error_detail(ctx), "'0x5 junk'"));
+  assert_non_null(strstr(rcw_ctx_last_error_detail(ctx), "unexpected 'junk'"));
+
+  assert_int_equal(rcw_eval_expr_why("0xffffffff + 1", &r, why, sizeof(why)),
+                   RCW_ERR_PBI_SYNTAX);
+  assert_non_null(strstr(why, "4294967296 does not fit"));
+  assert_int_equal(rcw_eval_expr_why("1 // 0", &r, why, sizeof(why)),
+                   RCW_ERR_PBI_SYNTAX);
+  assert_string_equal(why, "division by zero");
+
+  rcw_ctx_free(ctx);
 }
 
 /*
@@ -586,6 +697,10 @@ main(void) {
     cmocka_unit_test(test_pbi_poll_wide_address),
     cmocka_unit_test(test_eval_recursion_capped),
     cmocka_unit_test(test_eval_shift_count_overflow),
+    cmocka_unit_test(test_eval_rejects_trailing_text),
+    cmocka_unit_test(test_eval_python_operators),
+    cmocka_unit_test(test_eval_rejects_what_struct_pack_rejects),
+    cmocka_unit_test(test_pbi_operand_error_is_explained),
     cmocka_unit_test(test_eval_numeric_literal_overflow),
     cmocka_unit_test(test_pbi_write_addr_overflow),
     cmocka_unit_test(test_pbi_write_b1_addr_overflow),

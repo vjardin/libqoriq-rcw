@@ -463,9 +463,7 @@ int check_pbl(const uint8_t *buf, size_t len)
   (**rcw_compile_buffer()**, **rcw_decompile_buffer()**) bypass
   preprocessing entirely.
 
-- PBI command parameters support arithmetic expressions (**+ - \* & | << >>**)
-  because the C preprocessor expands macros to expressions like
-  **(0x1ea0000 + (0x100 \* (0)) + 0x0800)**.
+- PBI command parameters are expressions à la Python
 
 - Numbers are read as Python's **int(x, 0)** reads them
 

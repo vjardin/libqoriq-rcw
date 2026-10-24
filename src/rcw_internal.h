@@ -460,6 +460,8 @@ rcw_error_t rcw_parse_literal(const char *s, const char **end, uint64_t *out);
 /* rcw_pbi.c */
 rcw_error_t rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line);
 rcw_error_t rcw_eval_expr(const char *expr, uint32_t *result);
+#define RCW_EVAL_WHY_MAX 96
+rcw_error_t rcw_eval_expr_why(const char *expr, uint32_t *result, char *why, size_t why_len);
 
 /* rcw_uboot.c */
 rcw_error_t rcw_uboot_encode(rcw_ctx_t *ctx, const char *body, size_t len);
