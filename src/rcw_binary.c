@@ -30,15 +30,6 @@ pack_be32(uint8_t *buf, uint32_t val) {
   buf[3] = (uint8_t)(val & 0xFF);
 }
 
-static uint32_t
-unpack_le32(const uint8_t *buf) {
-  return (uint32_t)buf[0]
-      | ((uint32_t)buf[1] << 8)
-      | ((uint32_t)buf[2] << 16)
-      | ((uint32_t)buf[3] << 24)
-      ;
-}
-
 typedef void (*pack_fn)(uint8_t *buf, uint32_t val);
 
 rcw_error_t
@@ -130,15 +121,17 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
   memcpy(binary + pos, rcw_bytes, RCW_SIZE_BYTES);
   pos += RCW_SIZE_BYTES;
 
-  /* Checksum (sum of all 32-bit words so far) */
+  /*
+   * Checksum: the 32-bit sum of every word so far, the preamble, the Load
+   * RCW command and the 32 RCW words
+   */
   if (ctx->pbl) {
     if (ctx->vars.loadwochecksum) {
       pack(binary + pos, 0x00000000);
     } else {
       uint32_t checksum = 0;
-      for (size_t i = 0; i < pos; i += PBI_WORD_BYTES) {
-        checksum += unpack_le32(binary + i);
-      }
+      for (size_t i = 0; i < pos; i += PBI_WORD_BYTES)
+        checksum += rcw_unpack32(binary + i, ctx->vars.littleendian);
       pack(binary + pos, checksum);
     }
     pos += PBI_WORD_BYTES;

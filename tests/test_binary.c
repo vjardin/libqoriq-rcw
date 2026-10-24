@@ -111,6 +111,55 @@ test_binary_no_pbl(void **state) {
   rcw_ctx_free(ctx);
 }
 
+static uint32_t
+word_in(const uint8_t *p, int littleendian) {
+  return littleendian
+      ? (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24)
+      : ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static void
+test_binary_checksum_follows_word_order(void **state) {
+  (void)state;
+
+  for (int le = 1; le >= 0; le--) {
+    char src[512];
+    snprintf(src, sizeof(src),
+             "%%size=1024\n"
+             "%%pbiformat=2\n"
+             "%%classicbitnumbers=1\n"
+             "%%littleendian=%d\n"
+             "%%nocrc=1\n"
+             "SYS_PLL_RAT[6:2]\n"
+             "MEM_PLL_RAT[15:10]\n"
+             "PBI_LENGTH[287:276]\n"
+             "SYS_PLL_RAT=14\n"
+             "MEM_PLL_RAT=21\n"
+             ".pbi\n"
+             "write 0x01e00620,0x80000000\n"
+             ".end\n", le);
+
+    rcw_ctx_t *ctx = rcw_ctx_new();
+    uint8_t *out = NULL;
+    size_t len = 0;
+    assert_int_equal(rcw_compile_buffer(ctx, src, strlen(src), &out, &len), RCW_OK);
+    assert_int_equal(word_in(out, le), PBL_PREAMBLE);
+
+    uint32_t sum = 0;
+    for (size_t i = 0; i < RCW_PBL_CHECKSUM_OFFSET; i += 4)
+      sum += word_in(out + i, le);
+    assert_int_equal(word_in(out + RCW_PBL_CHECKSUM_OFFSET, le), sum);
+
+    /* and the envelope reader agrees with itself on the same image */
+    rcw_pbl_t pbl;
+    assert_int_equal(rcw_pbl_parse(out, len, le, &pbl), RCW_OK);
+    assert_int_equal(pbl.checksum, pbl.checksum_computed);
+
+    rcw_free(out);
+    rcw_ctx_free(ctx);
+  }
+}
+
 /*
  * Minimal source for a CRC board (ls1088-style, no %nocrc).
  */
@@ -388,6 +437,7 @@ int
 main(void) {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_binary_nocrc),
+    cmocka_unit_test(test_binary_checksum_follows_word_order),
     cmocka_unit_test(test_binary_no_pbl),
     cmocka_unit_test(test_binary_with_crc),
     cmocka_unit_test(test_binary_pbi_length_auto),
