@@ -22,6 +22,7 @@ rcw_ctx_t  *rcw_ctx_new(void);
 void        rcw_ctx_free(rcw_ctx_t *ctx);
 
 rcw_error_t rcw_ctx_add_include_path(rcw_ctx_t *ctx, const char *path);
+rcw_error_t rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *value);
 rcw_error_t rcw_ctx_set_pbl(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_warnings(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_bitfield(rcw_ctx_t *ctx, const char *name, uint64_t value);
@@ -89,6 +90,11 @@ These functions configure the context before compilation or decompilation.
 :   Add *path* to the preprocessor include search list. The current directory
     (**.**) is always included automatically. May be called multiple times (up
     to 32 paths).
+
+**rcw_ctx_add_define**(*ctx*, *name*, *value*)
+:   Define a preprocessor macro for **rcw_compile_file**(),
+    **rcw_decompile_file**() and **rcw_preprocess_file**(): *-Dname=value*
+    to **mcpp**, or *-Dname* (defined as 1) when *value* is NULL.
 
 **rcw_ctx_set_pbl**(*ctx*, *enable*)
 :   Enable (*enable* != 0) or disable (*enable* == 0) generation of the PBL

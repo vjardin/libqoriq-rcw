@@ -13,6 +13,7 @@ test_sources = {
   'test_secure'    : files('test_secure.c'),
   'test_decode'    : files('test_decode.c'),
   'test_pbl'       : files('test_pbl.c'),
+  'test_preprocess': files('test_preprocess.c'),
 }
 
 foreach name, src : test_sources

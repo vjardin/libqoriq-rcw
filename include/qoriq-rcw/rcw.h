@@ -51,6 +51,8 @@ void rcw_ctx_free(rcw_ctx_t *ctx);
  * Configuration (call before compilation)
  */
 rcw_error_t rcw_ctx_add_include_path(rcw_ctx_t *ctx, const char *path);
+
+rcw_error_t rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *value);
 rcw_error_t rcw_ctx_set_pbl(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_warnings(rcw_ctx_t *ctx, int enable);
 

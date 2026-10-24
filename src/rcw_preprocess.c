@@ -26,22 +26,23 @@
 /*
  * Build an argv for mcpp_lib_main():
  *
- *   mcpp -P -I . [-I path]... <input_path>
+ *   mcpp -P -I . [-I path]... [-Dname=value]... <input_path>
  *
  * -P  Suppress #line marker output.
  * -I  Add a directory to the include search path.
+ * -D  Define a macro, from rcw_ctx_add_define()
  *
  * argv[0] is conventionally the program name. mcpp itself ignores it.
- * Max argv slots: "mcpp" + "-P" + "-I" + "." + 2*N includes + input + NULL
- *               =  1    +  1   +  1   +  1  + 2*N           +   1   +  1
- *               =  6 + 2*N
+ * Max argv slots: "mcpp" + "-P" + "-I" + "." + 2*N includes + M defines
+ *                 + input + NULL
+ *               =  6 + 2*N + M
  */
 #define MCPP_ARGV_FIXED  6
 
 rcw_error_t
 rcw_preprocess(const rcw_ctx_t *ctx, const char *input_path,
                char **out, size_t *out_len) {
-  size_t max_argv = MCPP_ARGV_FIXED + 2 * ctx->include_path_count;
+  size_t max_argv = MCPP_ARGV_FIXED + 2 * ctx->include_path_count + ctx->define_count;
   char **argv = calloc(max_argv, sizeof(char *));
   if (!argv)
     return RCW_ERR_NOMEM;
@@ -56,6 +57,8 @@ rcw_preprocess(const rcw_ctx_t *ctx, const char *input_path,
     argv[argc++] = (char *)"-I";
     argv[argc++] = ctx->include_paths[i];
   }
+  for (size_t i = 0; i < ctx->define_count; i++)
+    argv[argc++] = ctx->defines[i];
   argv[argc++] = (char *)input_path;
   argv[argc]   = NULL;
 

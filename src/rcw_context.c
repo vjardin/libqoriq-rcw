@@ -32,6 +32,8 @@ rcw_ctx_free(rcw_ctx_t *ctx) {
 
   for (size_t i = 0; i < ctx->include_path_count; i++)
     free(ctx->include_paths[i]);
+  for (size_t i = 0; i < ctx->define_count; i++)
+    free(ctx->defines[i]);
 
   free(ctx->pbi.data);
   free(ctx);
@@ -47,6 +49,28 @@ rcw_ctx_add_include_path(rcw_ctx_t *ctx, const char *path) {
     return RCW_ERR_NOMEM;
 
   ctx->include_path_count++;
+
+  return RCW_OK;
+}
+
+rcw_error_t
+rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *value) {
+  if (!name || !*name)
+    return RCW_ERR_PARSE;
+  if (ctx->define_count >= RCW_MAX_DEFINES)
+    return RCW_ERR_NOMEM;
+
+  /* one mcpp argument: "-Dname" or "-Dname=value" */
+  size_t len = strlen("-D") + strlen(name) + (value ? 1 + strlen(value) : 0) + 1;
+  char *arg = malloc(len);
+  if (!arg)
+    return RCW_ERR_NOMEM;
+  if (value)
+    snprintf(arg, len, "-D%s=%s", name, value);
+  else
+    snprintf(arg, len, "-D%s", name);
+
+  ctx->defines[ctx->define_count++] = arg;
 
   return RCW_OK;
 }

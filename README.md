@@ -32,6 +32,7 @@ Supported platforms: LS1028, LS1088, LS2088, and LX2160 families (PBI format 2).
 - Built as both shared (`.so`) and static (`.a`) libraries
 - pkg-config support for downstream integration
 - Bitfield override API (equivalent to command-line `-D` overrides)
+- Preprocessor defines API
 - Buffer-based compilation API (`rcw_compile_buffer()` /
   `rcw_decompile_buffer()`) for embedding already-preprocessed source
 - No runtime dependency on an external C compiler: preprocessing is
@@ -85,6 +86,7 @@ This runs the cmocka unit test suites:
 | `test_secure`  | Secure boot commands (0x20 / 0x22) |
 | `test_decode`  | PBI command decoder                |
 | `test_pbl`     | PBL envelope reader, the CRC and Stop value and the PBI check |
+| `test_preprocess` | Macros handed to mcpp |
 
 ## Install
 

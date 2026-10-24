@@ -20,6 +20,7 @@
 #define RCW_MAX_SYMBOLS     512
 #define RCW_MAX_OVERRIDES    64
 #define RCW_MAX_INCLUDE_PATHS 32
+#define RCW_MAX_DEFINES      64
 #define RCW_FIELD_NAME_MAX   64
 #define RCW_ERROR_DETAIL_MAX 512
 #define RCW_MAX_LABELS      128
@@ -429,6 +430,8 @@ struct rcw_ctx {
   /* Configuration */
   char *include_paths[RCW_MAX_INCLUDE_PATHS];
   size_t include_path_count;
+  char *defines[RCW_MAX_DEFINES]; /* mcpp arguments, "-Dname=value" */
+  size_t define_count;
   bool pbl; /* generate PBL preamble/terminator (default true) */
   bool warnings;
 
