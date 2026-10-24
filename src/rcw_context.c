@@ -217,7 +217,7 @@ rcw_decompile_buffer(rcw_ctx_t *ctx,
 
 rcw_error_t
 rcw_decompile_file(rcw_ctx_t *ctx, const char *bin_path, const char *rcwi_path, char **out_source, size_t *out_len) {
-  /* Run gcc -E on the .rcwi to expand its macros */
+  /* Preprocess the .rcwi with mcpp to expand its macros */
   char *rcwi_pp = NULL;
   size_t rcwi_len = 0;
 
@@ -316,6 +316,10 @@ rcw_strerror(rcw_error_t err) {
       return "Invalid binary format";
     case RCW_ERR_UNSUPPORTED:
       return "Unsupported feature";
+    case RCW_ERR_TRUNCATED:
+      return "Command runs past the end of the data";
+    case RCW_ERR_PBI_LENGTH:
+      return "No Stop or CRC and Stop command at RCW[PBI_LENGTH]";
   }
 
   return "Unknown error";

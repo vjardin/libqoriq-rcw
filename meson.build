@@ -28,6 +28,8 @@ lib_sources = files(
   'src/rcw_uboot.c',
   'src/rcw_binary.c',
   'src/rcw_decompile.c',
+  'src/rcw_decode.c',
+  'src/rcw_pbl.c',
   'src/rcw_preprocess.c',
 )
 

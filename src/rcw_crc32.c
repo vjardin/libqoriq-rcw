@@ -12,7 +12,7 @@
 #include "rcw_internal.h"
 
 uint32_t
-rcw_crc32(const uint8_t *data, size_t len) {
+rcw_crc32_update(uint32_t crc, const uint8_t *data, size_t len, bool reverse_bits) {
   /* Build the CRC table (matches rcw.py lines 125-132) */
   uint32_t table[RCW_CRC32_TABLE_SIZE];
 
@@ -27,11 +27,15 @@ rcw_crc32(const uint8_t *data, size_t len) {
     table[i] = mask;
   }
 
-  /* Calculate the CRC (matches rcw.py lines 134-138) */
-  uint32_t crc = RCW_CRC32_INIT;
-
-  for (size_t i = 0; i < len; i++)
-    crc = (crc << 8) ^ table[(crc >> 24) ^ data[i]];
+  for (size_t i = 0; i < len; i++) {
+    uint8_t b = reverse_bits ? rcw_reverse_byte(data[i]) : data[i];
+    crc = (crc << 8) ^ table[(crc >> 24) ^ b];
+  }
 
   return crc;
+}
+
+uint32_t
+rcw_crc32(const uint8_t *data, size_t len) {
+  return rcw_crc32_update(RCW_CRC32_INIT, data, len, false);
 }

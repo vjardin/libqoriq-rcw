@@ -54,7 +54,6 @@ _Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagre
  *               X^22+X^23+X^26+X^32
  *   Initial condition: 0xFFFF_FFFF
  *   Final XOR: 0x0000_0000
- * This is NOT compatible with the standard zlib/binascii crc32.
  */
 #define RCW_CRC32_POLY          0x04c11db7
 #define RCW_CRC32_INIT          0xffffffff
@@ -182,6 +181,7 @@ _Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagre
 #define PBI_AWRITE_B3            3
 #define PBI_AWRITE_B4            4
 #define PBI_AWRITE_B5            5
+#define PBI_AWRITE_B_MAX         10
 #define PBI_AWRITE_B_SHIFT       26
 
 /*
@@ -447,6 +447,7 @@ rcw_error_t rcw_csf_read_words(rcw_ctx_t *ctx, const char *path,
 
 /* rcw_crc32.c */
 uint32_t rcw_crc32(const uint8_t *data, size_t len);
+uint32_t rcw_crc32_update(uint32_t crc, const uint8_t *data, size_t len, bool reverse_bits);
 
 /* rcw_bits.c */
 rcw_error_t rcw_bits_pack(const rcw_symtab_t *syms, const rcw_vars_t *vars, uint8_t out[RCW_SIZE_BYTES]);
@@ -470,6 +471,43 @@ rcw_error_t rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, cha
 
 /* rcw_preprocess.c */
 rcw_error_t rcw_preprocess(const rcw_ctx_t *ctx, const char *input_path, char **out, size_t *out_len);
+
+/* Bit order and byte order helpers */
+static inline uint8_t
+rcw_reverse_byte(uint8_t b) {
+  b = (uint8_t)(((b & 0xF0) >> 4) | ((b & 0x0F) << 4));
+  b = (uint8_t)(((b & 0xCC) >> 2) | ((b & 0x33) << 2));
+  b = (uint8_t)(((b & 0xAA) >> 1) | ((b & 0x55) << 1));
+
+  return b;
+}
+
+/* Matches rcw.py: int(bin(crc)[2:].zfill(32)[::-1], 2) */
+static inline uint32_t
+rcw_reverse_word(uint32_t w) {
+  uint32_t r = 0;
+
+  for (int i = 0; i < 32; i++) {
+    r <<= 1;
+    r |= (w & 1);
+    w >>= 1;
+  }
+  return r;
+}
+
+static inline uint32_t
+rcw_unpack32(const uint8_t *p, bool littleendian) {
+  if (littleendian)
+    return (uint32_t)p[0]
+        | ((uint32_t)p[1] << 8)
+        | ((uint32_t)p[2] << 16)
+        | ((uint32_t)p[3] << 24);
+
+  return ((uint32_t)p[0] << 24)
+       | ((uint32_t)p[1] << 16)
+       | ((uint32_t)p[2] << 8)
+       | (uint32_t)p[3];
+}
 
 /* PBI buffer helpers */
 static inline rcw_error_t

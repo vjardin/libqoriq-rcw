@@ -13,32 +13,6 @@
 
 #include "rcw_internal.h"
 
-/* Reverse the bit order within a byte (same as in rcw_bits.c). */
-static uint8_t
-reverse_byte(uint8_t b) {
-  b = (uint8_t)(((b & 0xF0) >> 4) | ((b & 0x0F) << 4));
-  b = (uint8_t)(((b & 0xCC) >> 2) | ((b & 0x33) << 2));
-  b = (uint8_t)(((b & 0xAA) >> 1) | ((b & 0x55) << 1));
-
-  return b;
-}
-
-/*
- * Reverse all 32 bits of a word.
- * Matches rcw.py: int(bin(crc)[2:].zfill(32)[::-1], 2)
- */
-static uint32_t
-reverse_word_bits(uint32_t w) {
-  uint32_t r = 0;
-
-  for (int i = 0; i < 32; i++) {
-    r <<= 1;
-    r |= (w & 1);
-    w >>= 1;
-  }
-  return r;
-}
-
 /* Pack a 32-bit word in the given endianness into buf. */
 static void
 pack_le32(uint8_t *buf, uint32_t val) {
@@ -192,37 +166,13 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
 
     /*
      * CRC covers PBI data + stop command word.
-     * Matches rcw.py line 716: crcbinary = pbi
      */
-    size_t crc_len = ctx->pbi.len + PBI_WORD_BYTES; /* plus the command word */
-    uint8_t *crc_input = malloc(crc_len);
-    if (!crc_input) {
-      free(binary);
-      return RCW_ERR_NOMEM;
-    }
-    if (ctx->pbi.len > 0)
-      memcpy(crc_input, ctx->pbi.data, ctx->pbi.len);
-    memcpy(crc_input + ctx->pbi.len, cmd_bytes, PBI_WORD_BYTES);
-
-    /*
-     * Apply classicbitnumbers bit-reversal to CRC input.
-     * Matches rcw.py lines 730-736.
-     */
-    if (ctx->vars.classicbitnumbers) {
-      for (size_t i = 0; i < crc_len; i++)
-        crc_input[i] = reverse_byte(crc_input[i]);
-    }
-
-    uint32_t crc = rcw_crc32(crc_input, crc_len);
-    free(crc_input);
-
-    /*
-     * Apply classicbitnumbers bit-reversal to CRC result.
-     * Matches rcw.py lines 741-742.
-     */
-    if (ctx->vars.classicbitnumbers)
-      crc = reverse_word_bits(crc);
-
+    bool classic = ctx->vars.classicbitnumbers;
+    uint32_t crc = rcw_crc32_update(RCW_CRC32_INIT, ctx->pbi.data,
+                                    ctx->pbi.len, classic);
+    crc = rcw_crc32_update(crc, cmd_bytes, sizeof(cmd_bytes), classic);
+    if (classic)
+      crc = rcw_reverse_word(crc);
     crc ^= RCW_CRC32_INIT;
 
     pack(binary + pos, cmd);

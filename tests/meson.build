@@ -11,6 +11,8 @@ test_sources = {
   'test_cond'      : files('test_cond.c'),
   'test_density'   : files('test_density.c'),
   'test_secure'    : files('test_secure.c'),
+  'test_decode'    : files('test_decode.c'),
+  'test_pbl'       : files('test_pbl.c'),
 }
 
 foreach name, src : test_sources

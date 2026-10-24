@@ -39,6 +39,20 @@ rcw_error_t rcw_decompile_buffer(rcw_ctx_t *ctx,
 rcw_error_t rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path,
                                 char **out, size_t *out_len);
 
+rcw_error_t rcw_pbi_decode(const uint8_t *buf, size_t len, int littleendian,
+                           rcw_pbi_cmd_t *cmd);
+const char *rcw_pbi_op_name(rcw_pbi_op_t op);
+
+rcw_error_t rcw_pbl_parse(const uint8_t *buf, size_t len, int littleendian,
+                          rcw_pbl_t *pbl);
+uint32_t    rcw_pbi_crc(const uint8_t *pbi, size_t len);
+
+typedef void (*rcw_pbi_visit_t)(const rcw_pbi_cmd_t *cmd, size_t off,
+                                void *arg);
+rcw_error_t rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian,
+                          rcw_pbi_visit_t visit, void *arg,
+                          rcw_pbi_check_t *chk);
+
 const char *rcw_strerror(rcw_error_t err);
 const char *rcw_ctx_last_error_detail(const rcw_ctx_t *ctx);
 
@@ -144,6 +158,75 @@ These functions configure the context before compilation or decompilation.
     pipelines (e.g. **qoriq-rcw \-\-dump**, where the binary is already
     a 128-byte buffer and a tempfile would be wasteful).
 
+## PBI Command Decoding
+
+These functions read the PBI commands of an image one at a time.
+
+The decoder delimits and decodes.
+
+**rcw_pbi_decode**(*buf*, *len*, *littleendian*, *cmd*)
+:   Decode the command that starts at *buf*[0], reading at most *len*
+    bytes. Words are little-endian when *littleendian* is non-zero.
+    On success *cmd* is filled in.
+
+    Returns **RCW_ERR_BAD_BINARY** when the word is not a PBI command.
+
+**rcw_pbi_op_name**(*op*)
+:   Return the *.rcw* mnemonic of *op* (**"write"**, **"blockcopy"**,
+    **"loadsecurityheader"**, ...), **"loadrcw"**, **"crcstop"** and
+    **"stop"** for the three commands that have none, and **"unknown"**
+    for **RCW_PBI_UNKNOWN** or any other value.
+
+## PBL Image Envelope
+
+A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
+128-byte RCW and the 4-byte checksum, then the PBI commands.
+
+**rcw_pbl_parse**(*buf*, *len*, *littleendian*, *pbl*)
+:   Read the envelope of the PBL image in *buf*: the preamble, the Load RCW
+    command with its 32 RCW words and checksum, and where the
+    PBI commands start. On success *pbl* is filled in.
+
+    Returns **RCW_ERR_TRUNCATED** when *len* is below 140 and
+    **RCW_ERR_BAD_BINARY** when the preamble is missing or word 1 is not a
+    Load RCW command.
+
+**rcw_pbi_crc**(*pbi*, *len*)
+:   Return the CRC.
+
+## PBI Check
+
+Before executing the PBI, the Boot 0 Reset Handler checks it as a whole (RM
+Section 8.2.6): the command RCW[PBI_LENGTH] points at must be a Stop or a
+CRC and Stop, and a CRC and Stop must carry the CRC of every command before
+it. Execution then runs from the first command to the first Stop or CRC and
+Stop, and each word on the way must be a command.
+
+**rcw_pbl_check**(*pbl*, *littleendian*, *visit*, *arg*, *chk*)
+:   Replay that check on the PBI of the image *pbl* describes, as returned
+    by **rcw_pbl_parse()**. When *visit* is not NULL it is called for each
+    command executed, in order, the terminator included, with the command,
+    its byte offset from *pbl*->**pbi** and *arg*. On return *chk* is filled
+    in: **len** is 4 * RCW[PBI_LENGTH], the bytes the Service Processor
+    reads; **end** is where execution stops, the end of the first Stop or
+    CRC and Stop, which is **len** unless a development buffer follows it;
+    **ncmd** counts the commands executed; **stop_op** is the command at
+    **len** - 8, **RCW_PBI_STOP** or **RCW_PBI_CRC_STOP** on success;
+    **crc** is the value a CRC and Stop carries and **crc_computed** the
+    CRC-32 of the **len** - 4 bytes before it, to compare, as a mismatch is
+    reported and not judged; **cmd** is the last command decoded, the
+    terminator on success and the word the walk stopped at otherwise.
+    RCW[PBI_LENGTH] 0 is a PBL without PBI: nothing is visited and the
+    check passes.
+
+    Returns **RCW_ERR_PBI_LENGTH** when the command at RCW[PBI_LENGTH] is
+    not a terminator: a command crosses it, the walk reaches it without a
+    Stop, or a Stop ends execution earlier and something else sits at the
+    end. Returns **RCW_ERR_BAD_BINARY** when the word at *chk*->**end** is
+    not a PBI command, *chk*->**cmd**.**word** holding it, and
+    **RCW_ERR_TRUNCATED** when the image holds fewer than **len** bytes
+    after the RCW, so that the command at RCW[PBI_LENGTH] cannot be read.
+
 ## Error Handling
 
 All functions that can fail return an **rcw_error_t** value. **RCW_OK** (0)
@@ -237,6 +320,15 @@ then pasted between **.uboot** and **.end** in the source.
 :   The source specifies a feature not supported by this library (e.g.
     **%pbiformat!=2**).
 
+**RCW_ERR_TRUNCATED**
+:   A PBI command runs past the end of the data given to
+    **rcw_pbi_decode()**, or the image given to **rcw_pbl_check()** holds
+    fewer bytes than RCW[PBI_LENGTH] says.
+
+**RCW_ERR_PBI_LENGTH**
+:   The command RCW[PBI_LENGTH] points at is not a Stop or a CRC and Stop
+    (**rcw_pbl_check()**).
+
 # EXAMPLES
 
 ## Compile an RCW file
@@ -313,6 +405,47 @@ if (err == RCW_OK) {
 }
 ```
 
+## Check a PBL image and list its PBI commands
+
+```c
+#include <qoriq-rcw/rcw.h>
+
+static void show(const rcw_pbi_cmd_t *cmd, size_t off, void *arg)
+{
+    (void)arg;
+    printf("%4zu: %s", off, rcw_pbi_op_name(cmd->op));
+    for (size_t i = 0; i < cmd->nargs; i++)
+        printf(" 0x%08x", cmd->args[i]);
+    printf("\n");
+}
+
+int check_pbl(const uint8_t *buf, size_t len)
+{
+    rcw_pbl_t pbl;
+    rcw_pbi_check_t chk;
+    rcw_error_t err;
+
+    err = rcw_pbl_parse(buf, len, 1, &pbl);
+    if (err != RCW_OK) {
+        printf("not a PBL image: %s\n", rcw_strerror(err));
+        return -1;
+    }
+    if (pbl.load_rcw_cmd == 0x80100000 &&
+        pbl.checksum != pbl.checksum_computed)
+        printf("RCW checksum 0x%08x, computed 0x%08x\n",
+               pbl.checksum, pbl.checksum_computed);
+
+    err = rcw_pbl_check(&pbl, 1, show, NULL, &chk);
+    if (err != RCW_OK) {
+        printf("PBI byte %zu: %s\n", chk.end, rcw_strerror(err));
+        return -1;
+    }
+    if (chk.stop_op == RCW_PBI_CRC_STOP && chk.crc != chk.crc_computed)
+        printf("PBI CRC 0x%08x, computed 0x%08x\n", chk.crc, chk.crc_computed);
+    return 0;
+}
+```
+
 # NOTES
 
 - Only PBI format 2 platforms are supported (**%pbiformat=2**). Older PowerPC
@@ -322,9 +455,7 @@ if (err == RCW_OK) {
 - A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
   128-byte RCW and the 4-byte checksum, then the PBI commands.
 
-- The library uses a custom CRC-32 implementation with polynomial
-  **0x04C11DB7** and initial value **0xFFFFFFFF**. This is not compatible with
-  the standard zlib **crc32()**.
+- RCW[PBI_LENGTH] counts 32-bit words, terminator included.
 
 - **rcw_compile_file()** and **rcw_decompile_file()** use an embedded
   copy of **mcpp**(1) for C preprocessing - no external toolchain is

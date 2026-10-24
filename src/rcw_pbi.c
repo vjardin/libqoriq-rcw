@@ -31,7 +31,7 @@
  * Handles: integer literals (decimal, 0x hex, 0 octal), parentheses,
  * and operators: + - * / & | ^ << >> ~
  *
- * Needed because gcc -E expands macros to expressions like:
+ * Needed because the preprocessor expands macros to expressions like:
  *   (0x1ea0000 + (0x40 * (0)) + 0x1200)
  * which rcw.py handles via eval().
  */
