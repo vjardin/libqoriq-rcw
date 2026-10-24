@@ -1,3 +1,22 @@
+libqoriq-rcw (1.2.0-1) unstable; urgency=medium
+
+  * Image checking API: rcw_pbi_decode, rcw_pbi_op_name, rcw_pbl_parse,
+    rcw_pbi_crc and rcw_pbl_check, with RCW_ERR_TRUNCATED and
+    RCW_ERR_PBI_LENGTH.
+  * PBI: loadc, jump, jumpc and labels as upstream rcw.py spells them,
+    printed back with labels by the decompiler; loadcondition and
+    jumpif kept as aliases.
+  * PBI: awrite.b1 to awrite.b10, every AltConfig Write width.
+  * PBI: operands evaluated like Python's eval(); trailing text and
+    results outside 32 bits are errors. flush refused under pbiformat=2.
+  * Parse: numbers read as Python's int(x, 0); %sysaddr refused with
+    pbiformat=2.
+  * Preprocess: rcw_ctx_add_define() for -D macros (RCW_CPPFLAGS).
+  * Decompile: list the set bits no field covers.
+  * Binary: Load RCW checksum summed in the image's word order.
+
+ -- Vincent Jardin <vjardin@free.fr>  Sun, 25 Oct 2026 01:09:54 +0200
+
 libqoriq-rcw (1.1.0-1) unstable; urgency=medium
 
   * PBI: the command set is now feature complete. New mnemonics for
