@@ -178,10 +178,11 @@ _Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagre
  *   The B field occupies bits [27:26] of the full 32-bit command word
  *   (after masking ACS at bit 31).
  */
-#define PBI_AWRITE_B3            3
+#define PBI_AWRITE_B_MIN         1  /* 1 byte */
+#define PBI_AWRITE_B3            3  /* 4 bytes, a bare "awrite" */
 #define PBI_AWRITE_B4            4
 #define PBI_AWRITE_B5            5
-#define PBI_AWRITE_B_MAX         10
+#define PBI_AWRITE_B_MAX         10 /* 512 bytes */
 #define PBI_AWRITE_B_SHIFT       26
 
 /*
@@ -320,19 +321,15 @@ _Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagre
 /* PBI buffer initial allocation size (bytes). */
 #define RCW_PBI_BUF_INIT_CAP     4096
 
-/* Maximum PBI parameters per command (awrite.b5 has the most: 5). */
 /*
- * Load Security Header (RM Table 41) carries 20 CSF words on one line, the
- * largest operand count of any PBI command. Everything else needs <= 5.
+ * Operands on one PBI line. The widest command is an AltConfig Write of
+ * 512 bytes (B=10): the offset and 128 data words. Load
+ * Security Header carries 20 CSF words. Everything else
+ * takes at most 5. The cap is enforced per command so that a surplus
+ * operand stays an error instead of being silently dropped.
  */
-#define PBI_MAX_PARAMS           21
-/*
- * Every command except Load Security Header takes at most 5 operands. The
- * cap is enforced per-command rather than globally so that supplying extra
- * parameters stays an ERROR instead of being silently dropped -- raising
- * the global limit to fit the 20-word CSF header would have quietly
- * weakened that for awrite.b5 and friends.
- */
+#define PBI_MAX_PARAMS           (1 + RCW_PBI_MAX_ARGS)
+#define PBI_AWRITE_MAX_PARAMS    (1 + RCW_PBI_MAX_ARGS)
 #define PBI_STD_MAX_PARAMS       5
 #define PBI_CSF_HEADER_WORDS     20
 

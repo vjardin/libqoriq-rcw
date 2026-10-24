@@ -256,6 +256,11 @@ The text consumed by **rcw_compile_file**() (after preprocessing) and by
     single PBI command (e.g. **write**, **awrite.b4**, **wait**,
     **poll**, **blockcopy**, **loadacwindow**). See **qoriq-rcw**(1)
     for the full command list.
+    An AltConfig Write names its width with the suffix **.b1** to
+    **.b10**.
+    2^(B-1) bytes, 1 to 512, in one data word per 4 bytes; a bare
+    **awrite** is **.b3**, one 4-byte word. The decompiler prints the
+    same suffixes, so a wide write recompiles to the same bytes.
 
 **.uboot** / **.end**
 :   Embeds a u-boot binary image into the PBI stream for SPI/SD/NAND

@@ -6,6 +6,8 @@
  * Includes a minimal expression evaluator for preprocessed macro expansions.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
@@ -387,7 +389,6 @@ rcw_error_t
 rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
   char op[32] = {0};
   char suffix[16] = {0};
-  char params_str[1024];
   uint32_t params[PBI_MAX_PARAMS];
   int nparam = 0;
 
@@ -438,18 +439,15 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
    * other command given a quoted argument simply sees zero parameters and
    * fails with its own "requires N parameters" message.
    */
-  /* Only Load Security Header may exceed the standard operand count. */
-  const int param_cap = (strcmp(op, "loadsecurityheader") == 0)
-      ? PBI_MAX_PARAMS : PBI_STD_MAX_PARAMS;
+  /* Only two commands exceed the standard operand count. */
+  const int param_cap = (strcmp(op, "awrite") == 0) ? PBI_AWRITE_MAX_PARAMS
+      : (strcmp(op, "loadsecurityheader") == 0) ? (1 + PBI_CSF_HEADER_WORDS)
+      : PBI_STD_MAX_PARAMS;
 
   if (*p && strchr(p, '"') == NULL) {
-    int n = snprintf(params_str, sizeof(params_str), "%s", p);
-    if (n < 0 || (size_t)n >= sizeof(params_str)) {
-      rcw_set_error(ctx,
-          "PBI parameter list too long (max %zu bytes): %s",
-          sizeof(params_str) - 1, line);
-      return RCW_ERR_PBI_SYNTAX;
-    }
+    char *params_str = strdup(p);
+    if (!params_str)
+      return RCW_ERR_NOMEM;
     char *tok = params_str;
 
     while (tok && *tok) {
@@ -457,6 +455,7 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
         rcw_set_error(ctx,
             "Too many PBI parameters (max %d): %s",
             param_cap, line);
+        free(params_str);
         return RCW_ERR_PBI_SYNTAX;
       }
 
@@ -484,12 +483,14 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
         rcw_set_error(ctx,
             "Cannot evaluate PBI parameter '%s': %s, in: %s",
             tok, why, line);
+        free(params_str);
         return err;
       }
       nparam++;
 
       tok = comma ? comma + 1 : NULL;
     }
+    free(params_str);
   }
 
   /* Encode each command (pbiformat=2 only) */
@@ -518,78 +519,54 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     return pbi_pack_word(ctx, params[1]);
 
   } else if (strcmp(op, "awrite") == 0) {
-    if (strcmp(suffix, "b5") == 0) {
-      if (nparam < 5) {
+    uint32_t b = PBI_AWRITE_B3;
+    if (suffix[0] != '\0') {
+      uint64_t sb = 0;
+      const char *endp = NULL;
+      if (suffix[0] != 'b' ||
+          rcw_parse_literal(suffix + 1, &endp, &sb) != RCW_OK || *endp != '\0' ||
+          sb < PBI_AWRITE_B_MIN || sb > PBI_AWRITE_B_MAX) {
         rcw_set_error(ctx,
-            "\"awrite.b5\" requires 5 parameters: %s", line);
+            "\"awrite.%s\": the width suffix is .b1 to .b%d "
+            "(1 to 512 bytes, RM Table 35): %s",
+            suffix, PBI_AWRITE_B_MAX, line);
         return RCW_ERR_PBI_SYNTAX;
       }
-      if (params[0] > PBI_AWRITE_ADDR_MAX) {
-        rcw_set_error(ctx,
-            "\"awrite.b5\" address 0x%x exceeds 26-bit field "
-            "(max 0x%x): %s",
-            params[0], PBI_AWRITE_ADDR_MAX, line);
-        return RCW_ERR_PBI_SYNTAX;
-      }
-      err = pbi_pack_word(ctx,
-          PBL_CMD_GENERAL |
-          ((uint32_t)PBI_AWRITE_B5 << PBI_AWRITE_B_SHIFT) |
-          params[0]);
-      if (err != RCW_OK)
-        return err;
-      for (int i = 1; i < 5; i++) {
-        err = pbi_pack_word(ctx, params[i]);
-        if (err != RCW_OK)
-          return err;
-      }
-      return RCW_OK;
-
-    } else if (strcmp(suffix, "b4") == 0) {
-      if (nparam < 3) {
-        rcw_set_error(ctx,
-            "\"awrite.b4\" requires 3 parameters: %s", line);
-        return RCW_ERR_PBI_SYNTAX;
-      }
-      if (params[0] > PBI_AWRITE_ADDR_MAX) {
-        rcw_set_error(ctx,
-            "\"awrite.b4\" address 0x%x exceeds 26-bit field "
-            "(max 0x%x): %s",
-            params[0], PBI_AWRITE_ADDR_MAX, line);
-        return RCW_ERR_PBI_SYNTAX;
-      }
-      err = pbi_pack_word(ctx,
-          PBL_CMD_GENERAL |
-          ((uint32_t)PBI_AWRITE_B4 << PBI_AWRITE_B_SHIFT) |
-          params[0]);
-      if (err != RCW_OK)
-        return err;
-      err = pbi_pack_word(ctx, params[1]);
-      if (err != RCW_OK)
-        return err;
-      return pbi_pack_word(ctx, params[2]);
-
-    } else {
-      /* Default awrite (B=3) */
-      if (nparam < 2) {
-        rcw_set_error(ctx,
-            "\"awrite\" requires 2 parameters: %s", line);
-        return RCW_ERR_PBI_SYNTAX;
-      }
-      if (params[0] > PBI_AWRITE_ADDR_MAX) {
-        rcw_set_error(ctx,
-            "\"awrite\" address 0x%x exceeds 26-bit field "
-            "(max 0x%x): %s",
-            params[0], PBI_AWRITE_ADDR_MAX, line);
-        return RCW_ERR_PBI_SYNTAX;
-      }
-      err = pbi_pack_word(ctx,
-          PBL_CMD_GENERAL |
-          ((uint32_t)PBI_AWRITE_B3 << PBI_AWRITE_B_SHIFT) |
-          params[0]);
-      if (err != RCW_OK)
-        return err;
-      return pbi_pack_word(ctx, params[1]);
+      b = (uint32_t)sb;
     }
+    uint32_t nbytes = 1u << (b - 1);
+    int nwords = (int)((nbytes + PBI_WORD_BYTES - 1) / PBI_WORD_BYTES);
+    if (nparam != 1 + nwords) {
+      rcw_set_error(ctx,
+          "\"awrite.b%u\" writes %u byte%s: the offset then %d data word%s, "
+          "got %d parameter%s: %s",
+          b, nbytes, nbytes == 1 ? "" : "s", nwords, nwords == 1 ? "" : "s",
+          nparam, nparam == 1 ? "" : "s", line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (params[0] > PBI_AWRITE_ADDR_MAX) {
+      rcw_set_error(ctx,
+          "\"awrite\" offset 0x%x exceeds 26-bit field (max 0x%x): %s",
+          params[0], PBI_AWRITE_ADDR_MAX, line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    if (b > 2 && (params[0] % PBI_WORD_BYTES) != 0) {
+      rcw_set_error(ctx,
+          "\"awrite.b%u\" offset 0x%x must be word aligned for writes "
+          "wider than 2 bytes (RM Table 35): %s",
+          b, params[0], line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
+    err = pbi_pack_word(ctx,
+        PBL_CMD_GENERAL | (b << PBI_AWRITE_B_SHIFT) | params[0]);
+    if (err != RCW_OK)
+      return err;
+    for (int i = 1; i <= nwords; i++) {
+      err = pbi_pack_word(ctx, params[i]);
+      if (err != RCW_OK)
+        return err;
+    }
+    return RCW_OK;
 
   } else if (strcmp(op, "wait") == 0) {
     if (nparam < 1) {

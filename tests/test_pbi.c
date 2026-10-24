@@ -546,8 +546,10 @@ test_pbi_awrite_addr_overflow(void **state) {
   assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
   assert_int_equal(ctx->pbi.len, 0);
 
-  /* Upper-bound address still encodes. */
-  err = rcw_pbi_encode_line(ctx, "awrite 0x3FFFFFF,0");
+  /* Upper-bound offsets still encode. */
+  err = rcw_pbi_encode_line(ctx, "awrite 0x3FFFFFC,0");
+  assert_int_equal(err, RCW_OK);
+  err = rcw_pbi_encode_line(ctx, "awrite.b1 0x3FFFFFF,0");
   assert_int_equal(err, RCW_OK);
 
   rcw_ctx_free(ctx);
@@ -602,24 +604,97 @@ test_pbi_too_many_params(void **state) {
 }
 
 /*
- * B2 - param string longer than the internal 1024-byte buffer used to
- * silently truncate (snprintf), causing the trailing tokens to parse
- * a half-finished expression. Now reported as a syntax error.
+ * AltConfig Write widths: B in 1..10 selects N = 2^(B-1) bytes
+ * in ceil(N/4) data words
  */
 static void
-test_pbi_param_string_too_long(void **state) {
+test_pbi_awrite_every_width(void **state) {
+  (void)state;
+  static const struct { unsigned b; int nwords; } widths[] = {
+    { 1, 1 }, { 2, 1 }, { 3, 1 }, { 4, 2 }, { 5, 4 }, { 6, 8 },
+    { 7, 16 }, { 8, 32 }, { 9, 64 }, { 10, 128 },
+  };
+  char line[2048];
+
+  for (size_t t = 0; t < sizeof(widths) / sizeof(widths[0]); t++) {
+    rcw_ctx_t *ctx = setup_ctx();
+    int n = snprintf(line, sizeof(line), "awrite.b%u 0x100", widths[t].b);
+    for (int k = 0; k < widths[t].nwords; k++)
+      n += snprintf(line + n, sizeof(line) - (size_t)n, ",0x%08x", 0x11110000u + (unsigned)k);
+
+    assert_int_equal(rcw_pbi_encode_line(ctx, line), RCW_OK);
+    assert_int_equal(ctx->pbi.len, 4u * (1u + (unsigned)widths[t].nwords));
+    assert_int_equal(pbi_word(ctx, 0), 0x80000000u | (widths[t].b << 26) | 0x100u);
+    for (int k = 0; k < widths[t].nwords; k++)
+      assert_int_equal(pbi_word(ctx, 4u * (1u + (unsigned)k)), 0x11110000u + (unsigned)k);
+    rcw_ctx_free(ctx);
+  }
+
+  rcw_ctx_t *ctx = setup_ctx();
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite.b1 0x100,0x5a"), RCW_OK);
+  assert_int_equal(pbi_word(ctx, 0), 0x84000100u);
+  assert_int_equal(pbi_word(ctx, 4), 0x0000005au);
+  rcw_ctx_free(ctx);
+}
+
+/* The suffix is the B field: nothing outside .b1 to .b10 encodes. */
+static void
+test_pbi_awrite_bad_width(void **state) {
+  (void)state;
+  static const char *lines[] = {
+    "awrite.b0 0x100,0x1",
+    "awrite.b11 0x100,0x1",
+    "awrite.b01 0x100,0x1",
+    "awrite.bx 0x100,0x1",
+    "awrite.short 0x100,0x1",
+    "awrite.b 0x100,0x1",
+  };
+
+  for (size_t t = 0; t < sizeof(lines) / sizeof(lines[0]); t++) {
+    rcw_ctx_t *ctx = setup_ctx();
+    assert_int_equal(rcw_pbi_encode_line(ctx, lines[t]), RCW_ERR_PBI_SYNTAX);
+    assert_int_equal(ctx->pbi.len, 0);
+    rcw_ctx_free(ctx);
+  }
+}
+
+/* The operand count follows the width: one too few or too many is an error. */
+static void
+test_pbi_awrite_operand_count(void **state) {
+  (void)state;
+  static const char *lines[] = {
+    "awrite 0x100",
+    "awrite 0x100,0x1,0x2",
+    "awrite.b1 0x100,0x1,0x2",
+    "awrite.b4 0x100,0x1",
+    "awrite.b4 0x100,0x1,0x2,0x3",
+    "awrite.b6 0x100,0x1,0x2,0x3,0x4,0x5,0x6,0x7",
+  };
+
+  for (size_t t = 0; t < sizeof(lines) / sizeof(lines[0]); t++) {
+    rcw_ctx_t *ctx = setup_ctx();
+    assert_int_equal(rcw_pbi_encode_line(ctx, lines[t]), RCW_ERR_PBI_SYNTAX);
+    assert_int_equal(ctx->pbi.len, 0);
+    rcw_ctx_free(ctx);
+  }
+}
+
+/* For B above 2, ALTCFG_OFFSET must be word aligned. */
+static void
+test_pbi_awrite_alignment(void **state) {
   (void)state;
   rcw_ctx_t *ctx = setup_ctx();
 
-  /* Build "write 0,0+0+0+...+0" with enough '+0' to overflow 1024B */
-  char line[2048];
-  int n = snprintf(line, sizeof(line), "write 0,0");
-  for (int i = 0; i < 600; i++)
-    n += snprintf(line + n, sizeof(line) - n, "+0");
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite.b1 0x101,0x5a"), RCW_OK);
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite.b2 0x102,0x5a5a"), RCW_OK);
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite 0x104,0x1"), RCW_OK);
+  size_t len = ctx->pbi.len;
 
-  rcw_error_t err = rcw_pbi_encode_line(ctx, line);
-  assert_int_equal(err, RCW_ERR_PBI_SYNTAX);
-  assert_int_equal(ctx->pbi.len, 0);
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite 0x102,0x1"), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite.b4 0x101,0x1,0x2"), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(rcw_pbi_encode_line(ctx, "awrite.b5 0x103,0x1,0x2,0x3,0x4"), RCW_ERR_PBI_SYNTAX);
+  assert_int_equal(ctx->pbi.len, len);
+  assert_non_null(strstr(rcw_ctx_last_error_detail(ctx), "word aligned"));
 
   rcw_ctx_free(ctx);
 }
@@ -708,7 +783,10 @@ main(void) {
     cmocka_unit_test(test_pbi_loadacwindow_overflow),
     cmocka_unit_test(test_pbi_blockcopy_src_overflow),
     cmocka_unit_test(test_pbi_too_many_params),
-    cmocka_unit_test(test_pbi_param_string_too_long),
+    cmocka_unit_test(test_pbi_awrite_every_width),
+    cmocka_unit_test(test_pbi_awrite_bad_width),
+    cmocka_unit_test(test_pbi_awrite_operand_count),
+    cmocka_unit_test(test_pbi_awrite_alignment),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

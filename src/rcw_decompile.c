@@ -90,22 +90,10 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
 
     case RCW_PBI_ALTCFG_WRITE: {
       uint32_t b = (c.word >> PBI_AWRITE_B_SHIFT) & PBI_AWRITE_B_BITS;
-      const char *mnemonic = NULL;
-      switch (b) {
-      case PBI_AWRITE_B3: mnemonic = "awrite";    break;
-      case PBI_AWRITE_B4: mnemonic = "awrite.b4"; break;
-      case PBI_AWRITE_B5: mnemonic = "awrite.b5"; break;
-      default: break;
-      }
-
-      if (!mnemonic) {
-        strbuf_printf(sb,
-            "/* Unsupported awrite payload width B=%u (%u bytes) at "
-            "PBI offset %zu -- not representable in .rcw source */\n",
-            b, c.width, i);
-        break;
-      }
-      strbuf_printf(sb, "%s 0x%08x", mnemonic, c.param);
+      if (b == PBI_AWRITE_B3)
+        strbuf_printf(sb, "awrite 0x%08x", c.param);
+      else
+        strbuf_printf(sb, "awrite.b%u 0x%08x", b, c.param);
       for (size_t k = 0; k < c.nargs; k++)
         strbuf_printf(sb, ",0x%08x", c.args[k]);
       strbuf_printf(sb, "\n");

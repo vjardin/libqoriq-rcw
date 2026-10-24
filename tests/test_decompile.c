@@ -882,12 +882,57 @@ test_decompile_roundtrip_secure(void **state) {
   rcw_free(b2);
 }
 
+/*
+ * Every others: .b1 and .b2 (one data word, 1 and 2 bytes),
+ * .b6 (8 words) and .b10 (128 words, the 512-byte maximum).
+ * The printer must spell each one, and recompiling must give the same
+ * bytes.
+ */
+static void
+test_decompile_roundtrip_awrite_narrow_and_wide(void **state) {
+  (void)state;
+
+  uint8_t *b1 = NULL, *b2 = NULL;
+  size_t l1 = 0, l2 = 0;
+  char *out = NULL;
+  char body[2048];
+  int n = snprintf(body, sizeof(body),
+                   "awrite.b1 0x0000101,0x00000011\n"
+                   "awrite.b2 0x0000102,0x00002222\n"
+                   "awrite.b6 0x0000200,0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x8\n"
+                   "awrite.b10 0x0001000");
+  for (int k = 0; k < 128; k++)
+    n += snprintf(body + n, sizeof(body) - (size_t)n, ",0x%08x", 0xa0000000u + (unsigned)k);
+  n += snprintf(body + n, sizeof(body) - (size_t)n, "\n");
+  assert_true(n > 0 && (size_t)n < sizeof(body));
+
+  seam_roundtrip(body, &b1, &l1, &b2, &l2, &out);
+
+  /* 8 + 8 + 36 + 516 bytes of PBI */
+  assert_int_equal(l1, 140 + 568 + 8);
+  assert_int_equal(l2, l1);
+  assert_memory_equal(b1, b2, l1);
+
+  assert_non_null(strstr(out, "\nawrite.b1 0x00000101,0x00000011\n"));
+  assert_non_null(strstr(out, "\nawrite.b2 0x00000102,0x00002222\n"));
+  assert_non_null(strstr(out, "\nawrite.b6 0x00000200,0x00000001,"));
+  assert_non_null(strstr(out, "\nawrite.b10 0x00001000,0xa0000000,"));
+  assert_non_null(strstr(out, ",0xa000007f\n"));
+  assert_null(strstr(out, "Unsupported"));
+  assert_null(strstr(out, "Unknown word"));
+
+  rcw_free(out);
+  rcw_free(b1);
+  rcw_free(b2);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_decompile_roundtrip),
     cmocka_unit_test(test_decompile_awrite_emits_width_suffix),
     cmocka_unit_test(test_decompile_roundtrip_awrite_widths),
+    cmocka_unit_test(test_decompile_roundtrip_awrite_narrow_and_wide),
     cmocka_unit_test(test_decompile_roundtrip_all_mnemonics),
     cmocka_unit_test(test_decompile_roundtrip_poll),
     cmocka_unit_test(test_decompile_roundtrip_cond),
