@@ -62,230 +62,138 @@ strbuf_printf(strbuf_t *sb, const char *fmt, ...) {
   }
 }
 
-static uint32_t
-read_le32(const uint8_t *p) {
-  return (uint32_t)p[0]
-      | ((uint32_t)p[1] << 8)
-      | ((uint32_t)p[2] << 16)
-      | ((uint32_t)p[3] << 24);
-}
-
-static uint32_t
-read_be32(const uint8_t *p) {
-  return ((uint32_t)p[0] << 24)
-       | ((uint32_t)p[1] << 16)
-       | ((uint32_t)p[2] << 8)
-       | (uint32_t)p[3];
-}
-
-typedef uint32_t (*unpack_fn)(const uint8_t *p);
-
-/*
- * Disassemble PBI commands in a binary PBI section.
- * Matches rcw.py lines 909-1043 for pbiformat=2.
- *
- * All bounds checks compare against the real pbi_len (not a rounded-
- * up version). Trailing bytes that don't form a full 4-byte word are
- * silently ignored - rather than read out-of-bounds.
- */
 static rcw_error_t
-disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
-                size_t pbi_len, unpack_fn unpack) {
+disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
+                int littleendian) {
   size_t i = 0;
 
   while (i + 4 <= pbi_len) {
-    uint32_t word = unpack(pbi + i);
-    i += 4;
+    rcw_pbi_cmd_t c;
+    rcw_error_t err = rcw_pbi_decode(pbi + i, pbi_len - i, littleendian, &c);
 
-    uint8_t hdr = (uint8_t)((word & PBI_HDR_MASK) >> PBI_HDR_SHIFT);
-
-    if (hdr == PBI_HDR_GENERAL) {
-      /* General command */
-      uint8_t cmd = (uint8_t)((word & PBI_CMD_MASK) >> PBI_CMD_SHIFT);
-
-      if (cmd == PBI_GENCMD_BLOCKCOPY && i + 12 <= pbi_len) {
-        /* blockcopy */
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        uint32_t a2 = unpack(pbi + i); i += 4;
-        uint32_t a3 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x\n", word & PBI_BLOCKCOPY_SRC_MAX, a1, a2, a3);
-
-      } else if (cmd == PBI_GENCMD_LOADACWINDOW) {
-        strbuf_printf(sb, "loadacwindow 0x%08x\n", word & PBI_ACWINDOW_MAX);
-
-      } else if (cmd == PBI_GENCMD_LOADCONDITION && i + 8 <= pbi_len) {
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        uint32_t a2 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "loadcondition 0x%08x,0x%08x\n", a1, a2);
-
-      } else if (cmd == PBI_GENCMD_POLL_SHORT && i + 12 <= pbi_len) {
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        uint32_t a2 = unpack(pbi + i); i += 4;
-        uint32_t a3 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "poll.short 0x%08x,0x%08x,0x%08x\n", a1, a2, a3);
-
-      } else if (cmd == PBI_GENCMD_POLL_LONG && i + 12 <= pbi_len) {
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        uint32_t a2 = unpack(pbi + i); i += 4;
-        uint32_t a3 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "poll.long 0x%08x,0x%08x,0x%08x\n", a1, a2, a3);
-
-      } else if (cmd == PBI_GENCMD_WAIT) {
-        strbuf_printf(sb, "wait 0x%08x\n", word & PBI_PARAM_MASK);
-
-      } else if (cmd == PBI_GENCMD_CRC_STOP && i + 4 <= pbi_len) {
-        uint32_t crc = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "/* CRC and Stop command (CRC 0x%08x)*/\n", crc);
-
-      } else if (cmd == PBI_GENCMD_STOP) {
-        if (i + 4 <= pbi_len)
-          i += 4;
-        strbuf_printf(sb, "/* Stop command */\n");
-
-      } else if (cmd == PBI_GENCMD_CCSR_COPY && i + 12 <= pbi_len) {
-        /* RM Table 37: 16 B, word type in the low 2 bits of the header. */
-        static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
-        uint32_t wt   = word & PBI_CCSR_COPY_TYPE_MASK;
-        uint32_t src  = unpack(pbi + i); i += 4;
-        uint32_t dst  = unpack(pbi + i); i += 4;
-        uint32_t nw   = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "ccsrcopy.%s 0x%08x,0x%08x,0x%08x\n",
-                      wsuf[wt], src, dst, nw);
-
-      } else if (cmd == PBI_GENCMD_CCSR_RMW && i + 12 <= pbi_len) {
-        /*
-         * RM Table 43: 16 B, header low byte = ops[3:2] | masktype[1:0].
-         * Emitted as 0x42 per Table 27; Table 43's own "CMD = 0x02" is a
-         * documentation error (0x02 is Table 37's opcode).
-         */
-        static const char *msuf[4] = { "?", "b1", "b2", "b4" };
-        static const char *opnm[4] = { "ccsrset", "ccsrclear",
-                                       "ccsrreplace", "ccsrreserved" };
-        uint32_t mt   = word & PBI_RMW_MASK_TYPE_MASK;
-        uint32_t ops  = (word >> PBI_RMW_OPS_SHIFT) & PBI_RMW_OPS_MASK;
-        uint32_t addr = unpack(pbi + i); i += 4;
-        uint32_t mask = unpack(pbi + i); i += 4;
-        uint32_t data = unpack(pbi + i); i += 4;
-        if (ops == PBI_RMW_OPS_REPLACE)
-          strbuf_printf(sb, "%s.%s 0x%08x,0x%08x,0x%08x\n",
-                        opnm[ops], msuf[mt], addr, mask, data);
-        else
-          strbuf_printf(sb, "%s.%s 0x%08x,0x%08x\n",
-                        opnm[ops], msuf[mt], addr, mask);
-
-      } else if (cmd == PBI_GENCMD_JUMP && i + 4 <= pbi_len) {
-        /* RM Table 46: 8 bytes, one OFFSET word. Forward only. */
-        uint32_t off = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "jump 0x%08x\n", off);
-
-      } else if (cmd == PBI_GENCMD_JUMP_COND && i + 8 <= pbi_len) {
-        /* RM Table 47: 12 bytes, OFFSET then CONDITION. Forward only. */
-        uint32_t off  = unpack(pbi + i); i += 4;
-        uint32_t cond = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "jumpif 0x%08x,0x%08x\n", off, cond);
-
-      } else if (cmd == PBI_GENCMD_LOAD_SEC_HDR &&
-                 i + 4 * PBI_CSF_HEADER_WORDS <= pbi_len) {
-        /*
-         * RM Table 41: 84 B, 20 CSF words. Always emitted in the inline
-         * form -- the source may have used a file, but the binary does not
-         * record which, and inline is what round-trips.
-         */
-        strbuf_printf(sb, "loadsecurityheader ");
-        for (size_t k = 0; k < PBI_CSF_HEADER_WORDS; k++) {
-          uint32_t w = unpack(pbi + i); i += 4;
-          strbuf_printf(sb, "%s0x%08x",
-                        (k == 0) ? "" : ",", w);
-        }
-        strbuf_printf(sb, "\n");
-
-      } else if (cmd == PBI_GENCMD_LOAD_CSF_PTR && i + 4 <= pbi_len) {
-        /* RM Table 42: 8 B, one 4-byte-aligned pointer. */
-        uint32_t ptr = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "loadboot1csfptr 0x%08x\n", ptr);
-
-      } else if (cmd == PBI_GENCMD_LOAD_RCW_CS ||
-                 cmd == PBI_GENCMD_LOAD_RCW_NOCS) {
-        strbuf_printf(sb, "/* Disassemble not implemented for word 0x%08x */\n", word);
-
-      } else {
-        strbuf_printf(sb, "/* Unknown word 0x%08x */\n", word);
-
-      }
-
-    } else if ((hdr & (PBI_HDR_ACS | PBI_HDR_RSVD)) == 0) {
-      /* CCSR write */
-      uint8_t cmd = (hdr & PBI_CCSR_TYPE_MASK) >> PBI_CCSR_TYPE_SHIFT;
-      if (cmd == PBI_CCSR_WRITE_B1 && i + 4 <= pbi_len) {
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "write.b1 0x%08x,0x%08x\n", word & PBI_CCSR_ADDR_MASK, a1);
-
-      } else if (cmd == PBI_CCSR_WRITE_B4 && i + 4 <= pbi_len) {
-        uint32_t a1 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "write 0x%08x,0x%08x\n", word & PBI_CCSR_ADDR_MASK, a1);
-
-      } else {
-        strbuf_printf(sb, "/* Unknown word 0x%08x */\n", word);
-
-      }
-
-    } else if ((hdr & (PBI_HDR_ACS | PBI_HDR_RSVD)) == PBI_HDR_ACS) {
-      /* Altconfig write */
-      uint8_t bcnt = (hdr & PBI_AWRITE_B_MASK) >> PBI_AWRITE_B_RSHIFT;
-      if (bcnt) {
-        /*
-         * The payload width lives in the mnemonic suffix, not in the
-         * argument count: the parser dispatches on "awrite" (B=3, one
-         * data word), "awrite.b4" (two) and "awrite.b5" (four). Emit
-         * the matching spelling -- writing a bare "awrite" for a wide
-         * command produces source that still *lists* every data word
-         * but recompiles to B=3, silently dropping all but the first
-         * and shrinking the PBI (measured: 992 bytes lost over one
-         * nbxv3 image, which then boots differently).
-         *
-         * The hardware allows B=1..10 (Section 8.3.2.2); we can only
-         * round-trip what rcw_pbi.c can parse back. Anything else is
-         * flagged rather than mis-emitted.
-         */
-        const char *mnemonic = NULL;
-        switch (bcnt) {
-        case PBI_AWRITE_B3: mnemonic = "awrite";    break;
-        case PBI_AWRITE_B4: mnemonic = "awrite.b4"; break;
-        case PBI_AWRITE_B5: mnemonic = "awrite.b5"; break;
-        default: break;
-        }
-
-        if (!mnemonic) {
-          strbuf_printf(sb,
-              "/* Unsupported awrite payload width B=%u (%u bytes) at "
-              "PBI offset %zu -- not representable in .rcw source */\n",
-              bcnt, 1u << (bcnt - 1), (size_t)(i - 4));
-          /* Skip the payload so the stream stays in sync. */
-          for (uint32_t j = 0;
-               j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
-               j += 4)
-            i += 4;
-        } else {
-          strbuf_printf(sb, "%s 0x%08x", mnemonic,
-                        word & PBI_AWRITE_ADDR_MASK);
-          for (uint32_t j = 0;
-               j < (1u << (bcnt - 1)) && i + 4 <= pbi_len;
-               j += 4) {
-            uint32_t a1 = unpack(pbi + i);
-            i += 4;
-            strbuf_printf(sb, ",0x%08x", a1);
-          }
-          strbuf_printf(sb, "\n");
-        }
-
-      } else {
-        strbuf_printf(sb, "/* Unknown word 0x%08x */\n", word);
-
-      }
-    } else {
-      strbuf_printf(sb, "/* Unknown word 0x%08x */\n", word);
-
+    if (err == RCW_ERR_TRUNCATED && c.op == RCW_PBI_STOP) {
+      strbuf_printf(sb, "/* Stop command */\n");
+      i += 4;
+      continue;
     }
+    if (err != RCW_OK) {
+      strbuf_printf(sb, "/* Unknown word 0x%08x */\n", c.word);
+      i += 4;
+      continue;
+    }
+
+    switch (c.op) {
+    case RCW_PBI_CCSR_WRITE:
+      strbuf_printf(sb, "%s 0x%08x,0x%08x\n",
+                    c.width == 1 ? "write.b1" : "write", c.param, c.args[0]);
+      break;
+
+    case RCW_PBI_ALTCFG_WRITE: {
+      uint32_t b = (c.word >> PBI_AWRITE_B_SHIFT) & PBI_AWRITE_B_BITS;
+      const char *mnemonic = NULL;
+      switch (b) {
+      case PBI_AWRITE_B3: mnemonic = "awrite";    break;
+      case PBI_AWRITE_B4: mnemonic = "awrite.b4"; break;
+      case PBI_AWRITE_B5: mnemonic = "awrite.b5"; break;
+      default: break;
+      }
+
+      if (!mnemonic) {
+        strbuf_printf(sb,
+            "/* Unsupported awrite payload width B=%u (%u bytes) at "
+            "PBI offset %zu -- not representable in .rcw source */\n",
+            b, c.width, i);
+        break;
+      }
+      strbuf_printf(sb, "%s 0x%08x", mnemonic, c.param);
+      for (size_t k = 0; k < c.nargs; k++)
+        strbuf_printf(sb, ",0x%08x", c.args[k]);
+      strbuf_printf(sb, "\n");
+      break;
+    }
+
+    case RCW_PBI_BLOCKCOPY:
+      strbuf_printf(sb, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x\n",
+                    c.param & PBI_BLOCKCOPY_SRC_MAX, c.args[0], c.args[1], c.args[2]);
+      break;
+
+    case RCW_PBI_CCSR_COPY: {
+      static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
+      strbuf_printf(sb, "ccsrcopy.%s 0x%08x,0x%08x,0x%08x\n",
+                    wsuf[c.param & PBI_CCSR_COPY_TYPE_MASK], c.args[0], c.args[1], c.args[2]);
+      break;
+    }
+
+    case RCW_PBI_CCSR_RMW: {
+      static const char *msuf[4] = { "?", "b1", "b2", "b4" };
+      static const char *opnm[4] = { "ccsrset", "ccsrclear",
+                                     "ccsrreplace", "ccsrreserved" };
+      uint32_t mt  = c.param & PBI_RMW_MASK_TYPE_MASK;
+      uint32_t ops = (c.param >> PBI_RMW_OPS_SHIFT) & PBI_RMW_OPS_MASK;
+      if (ops == PBI_RMW_OPS_REPLACE)
+        strbuf_printf(sb, "%s.%s 0x%08x,0x%08x,0x%08x\n",
+                      opnm[ops], msuf[mt], c.args[0], c.args[1], c.args[2]);
+      else
+        strbuf_printf(sb, "%s.%s 0x%08x,0x%08x\n",
+                      opnm[ops], msuf[mt], c.args[0], c.args[1]);
+      break;
+    }
+
+    case RCW_PBI_LOAD_RCW:
+    case RCW_PBI_LOAD_RCW_NOCS:
+      strbuf_printf(sb, "/* Disassemble not implemented for word 0x%08x */\n", c.word);
+      break;
+
+    case RCW_PBI_LOADACWINDOW:
+      strbuf_printf(sb, "loadacwindow 0x%08x\n", c.param & PBI_ACWINDOW_MAX);
+      break;
+
+    case RCW_PBI_LOADCONDITION:
+      strbuf_printf(sb, "loadcondition 0x%08x,0x%08x\n", c.args[0], c.args[1]);
+      break;
+
+    case RCW_PBI_LOAD_SEC_HDR:
+      strbuf_printf(sb, "loadsecurityheader ");
+      for (size_t k = 0; k < c.nargs; k++)
+        strbuf_printf(sb, "%s0x%08x", (k == 0) ? "" : ",", c.args[k]);
+      strbuf_printf(sb, "\n");
+      break;
+
+    case RCW_PBI_LOAD_CSF_PTR:
+      strbuf_printf(sb, "loadboot1csfptr 0x%08x\n", c.args[0]);
+      break;
+
+    case RCW_PBI_POLL_SHORT:
+    case RCW_PBI_POLL_LONG:
+      strbuf_printf(sb, "%s 0x%08x,0x%08x,0x%08x\n", rcw_pbi_op_name(c.op),
+                    c.args[0], c.args[1], c.args[2]);
+      break;
+
+    case RCW_PBI_WAIT:
+      strbuf_printf(sb, "wait 0x%08x\n", c.param);
+      break;
+
+    case RCW_PBI_JUMP:
+      strbuf_printf(sb, "jump 0x%08x\n", c.args[0]);
+      break;
+
+    case RCW_PBI_JUMP_COND:
+      strbuf_printf(sb, "jumpif 0x%08x,0x%08x\n", c.args[0], c.args[1]);
+      break;
+
+    case RCW_PBI_CRC_STOP:
+      strbuf_printf(sb, "/* CRC and Stop command (CRC 0x%08x)*/\n", c.args[0]);
+      break;
+
+    case RCW_PBI_STOP:
+      strbuf_printf(sb, "/* Stop command */\n");
+      break;
+
+    case RCW_PBI_UNKNOWN:
+      break;
+    }
+
+    i += c.size;
   }
 
   return RCW_OK;
@@ -293,8 +201,6 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
 
 rcw_error_t
 rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_source, size_t *out_len) {
-  unpack_fn unpack = ctx->vars.littleendian ? read_le32 : read_be32;
-
   strbuf_t sb;
   rcw_error_t err = strbuf_init(&sb);
   if (err != RCW_OK)
@@ -373,7 +279,7 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
   /* Disassemble PBI if present */
   if (pbi_data && pbi_len > 0) {
     strbuf_printf(&sb, "\n.pbi\n");
-    err = disassemble_pbi(&sb, pbi_data, pbi_len, unpack);
+    err = disassemble_pbi(&sb, pbi_data, pbi_len, ctx->vars.littleendian);
     if (err != RCW_OK) {
       free(sb.data);
       return err;
