@@ -201,6 +201,8 @@ parse_variable(rcw_ctx_t *ctx, const char *line) {
     ctx->vars.loadwochecksum = (val != 0);
   else if (strcmp(name, "pbladdr") == 0)
     ctx->vars.pbladdr = (uint32_t)strtoul(valstr, NULL, 16);
+  else if (strcmp(name, "sysaddr") == 0)
+    ctx->vars.has_sysaddr = true; /* its value only matters to the legacy header */
 
   return RCW_OK;
 }

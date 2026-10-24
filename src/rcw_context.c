@@ -157,6 +157,10 @@ rcw_compile_buffer(rcw_ctx_t *ctx, const char *preprocessed, size_t len, uint8_t
     rcw_set_error(ctx, "Only pbiformat=2 is supported (got %d)", ctx->vars.pbiformat);
     return RCW_ERR_UNSUPPORTED;
   }
+  if (ctx->pbl && ctx->vars.has_sysaddr) {
+    rcw_set_error(ctx, "PBL format does not use %%sysaddr");
+    return RCW_ERR_PARSE;
+  }
   if (ctx->vars.size != RCW_SIZE_BITS) {
     rcw_set_error(ctx, "%%size must be %d (got %d)", RCW_SIZE_BITS, ctx->vars.size);
     return RCW_ERR_MISSING_VAR;

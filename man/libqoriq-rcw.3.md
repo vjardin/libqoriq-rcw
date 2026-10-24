@@ -469,7 +469,9 @@ int check_pbl(const uint8_t *buf, size_t len)
 
 - Only PBI format 2 platforms are supported (**%pbiformat=2**). Older PowerPC
   platforms using **%pbiformat=0** or **%pbiformat=1** are not supported and
-  will return **RCW_ERR_UNSUPPORTED**.
+  will return **RCW_ERR_UNSUPPORTED**. A **%sysaddr** variable, which only the
+  legacy PBL header carries, is refused with **RCW_ERR_PARSE** when the PBL
+  header is generated, as **rcw.py** refuses it.
 
 - A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
   128-byte RCW and the 4-byte checksum, then the PBI commands.

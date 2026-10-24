@@ -538,9 +538,39 @@ test_parse_toplevel_comment_is_quiet(void **state) {
   rcw_ctx_free(ctx);
 }
 
+static void
+test_sysaddr_refused_with_pbiformat_2(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%sysaddr=ee0100\n"
+    "SYS_PLL_RAT[6:2]\n"
+    "PBI_LENGTH[287:276]\n"
+    "SYS_PLL_RAT=14\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  uint8_t *bin = NULL;
+  size_t len = 0;
+  assert_int_equal(rcw_compile_buffer(ctx, src, strlen(src), &bin, &len),
+                   RCW_ERR_PARSE);
+  assert_string_equal(rcw_ctx_last_error_detail(ctx),
+                      "PBL format does not use %sysaddr");
+  assert_null(bin);
+
+  rcw_ctx_set_pbl(ctx, 0);
+  assert_int_equal(rcw_compile_buffer(ctx, src, strlen(src), &bin, &len), RCW_OK);
+  assert_int_equal(len, RCW_SIZE_BYTES);
+  rcw_free(bin);
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(test_sysaddr_refused_with_pbiformat_2),
     cmocka_unit_test(test_parse_toplevel_comment_is_quiet),
     cmocka_unit_test(test_parse_variables),
     cmocka_unit_test(test_parse_symbols),

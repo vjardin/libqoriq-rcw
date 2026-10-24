@@ -401,6 +401,7 @@ typedef struct {
   bool nocrc; /* %nocrc=1 */
   bool loadwochecksum; /* %loadwochecksum=1 */
   uint32_t pbladdr; /* %pbladdr (default 0x138000) */
+  bool has_sysaddr; /* %sysaddr seen: a legacy PBL header field */
 } rcw_vars_t;
 
 /*
