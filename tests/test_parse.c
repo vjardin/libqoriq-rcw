@@ -513,9 +513,35 @@ test_parse_value_leading_zero_rejected(void **state) {
   rcw_ctx_free(ctx);
 }
 
+/* A comment alone on a top-level line is skipped quietly, like in a block. */
+static void
+test_parse_toplevel_comment_is_quiet(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "/* Unknown bits in positions: 8 9 */\n"
+    "SYS_PLL_RAT[6:2]\n"
+    "  /* indented too */  \n"
+    "SYS_PLL_RAT=14\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  char buf[256];
+  rcw_error_t err = RCW_OK;
+  CAPTURE_STDERR(buf, sizeof(buf), {
+    err = rcw_parse(ctx, src, strlen(src));
+  });
+  assert_int_equal(err, RCW_OK);
+  assert_string_equal(buf, "");
+  assert_int_equal(ctx->symbols.count, 1);
+  assert_int_equal(ctx->symbols.entries[0].value, 14);
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(test_parse_toplevel_comment_is_quiet),
     cmocka_unit_test(test_parse_variables),
     cmocka_unit_test(test_parse_symbols),
     cmocka_unit_test(test_parse_assignments),

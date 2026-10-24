@@ -324,16 +324,20 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
 
 
   /* Extract field values from RCW bits */
+  uint8_t covered[RCW_SIZE_BITS / 8] = {0};
   for (size_t i = 0; i < ctx->symbols.count; i++) {
     const rcw_symbol_t *sym = &ctx->symbols.entries[i];
 
     uint64_t v = rcw_bits_extract(rcw_data, sym->begin, sym->end, ctx->vars.classicbitnumbers);
 
-    if (v != 0) {
-      int b = (sym->begin < sym->end) ? sym->begin : sym->end;
-      int e = (sym->begin < sym->end) ? sym->end : sym->begin;
-      int s = 1 + e - b;
+    int b = (sym->begin < sym->end) ? sym->begin : sym->end;
+    int e = (sym->begin < sym->end) ? sym->end : sym->begin;
+    int s = 1 + e - b;
 
+    for (int k = b; k <= e; k++)
+      covered[k / 8] |= (uint8_t)(1u << (k % 8));
+
+    if (v != 0) {
       if (s > RCW_DECOMPILE_HEX_THRESHOLD)
         strbuf_printf(&sb, "%s=0x%lx\n", sym->name, (unsigned long)v);
       else
@@ -341,6 +345,18 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
     }
 
   }
+
+  bool unknown = false;
+  for (int k = 0; k < RCW_SIZE_BITS; k++) {
+    if (covered[k / 8] & (1u << (k % 8)))
+      continue;
+    if (rcw_bits_extract(rcw_data, k, k, ctx->vars.classicbitnumbers) == 0)
+      continue;
+    strbuf_printf(&sb, "%s %d", unknown ? "" : "/* Unknown bits in positions:", k);
+    unknown = true;
+  }
+  if (unknown)
+    strbuf_printf(&sb, " */\n");
 
   /* Disassemble PBI if present */
   if (pbi_data && pbi_len > 0) {

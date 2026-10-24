@@ -381,8 +381,8 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
     if (!line)
       return RCW_ERR_NOMEM;
 
-    /* Skip blank lines */
-    if (line[0] == '\0') {
+    /* Skip blank lines, and a comment alone on its line */
+    if (line[0] == '\0' || (line[0] == '/' && line[1] == '*')) {
       free(line);
       p = eol + 1;
 

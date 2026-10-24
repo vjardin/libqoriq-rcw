@@ -967,9 +967,90 @@ test_decompile_roundtrip_awrite_narrow_and_wide(void **state) {
   rcw_free(b2);
 }
 
+static void
+test_decompile_reports_unknown_bits(void **state) {
+  (void)state;
+
+  static const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "A[7:0]\n"
+    "B[9:8]\n"
+    "C[300]\n"
+    "PBI_LENGTH[287:276]\n"
+    "A=5\n"
+    "B=3\n"
+    "C=1\n";
+  /* the same image read with a .rcwi that does not know B and C */
+  static const char partial_rcwi[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "A[7:0]\n"
+    "PBI_LENGTH[287:276]\n";
+  static const char full_rcwi[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "%classicbitnumbers=1\n"
+    "%littleendian=1\n"
+    "%nocrc=1\n"
+    "A[7:0]\n"
+    "B[9:8]\n"
+    "C[300]\n"
+    "PBI_LENGTH[287:276]\n";
+
+  rcw_ctx_t *c1 = rcw_ctx_new();
+  uint8_t *bin = NULL;
+  size_t len = 0;
+  assert_int_equal(rcw_compile_buffer(c1, src, strlen(src), &bin, &len), RCW_OK);
+
+  char *out = NULL;
+  size_t out_len = 0;
+  rcw_ctx_t *c2 = rcw_ctx_new();
+  assert_int_equal(rcw_decompile_buffer(c2, partial_rcwi, strlen(partial_rcwi),
+                                        bin, len, NULL, &out, &out_len), RCW_OK);
+  assert_int_equal(strncmp(out, "A=5\n", 4), 0); /* no header: the body starts here */
+  assert_non_null(strstr(out, "\n/* Unknown bits in positions: 8 9 300 */\n"));
+
+  /* the comment does not get in the way of recompiling */
+  size_t comb_len = strlen(partial_rcwi) + out_len;
+  char *comb = malloc(comb_len + 1);
+  memcpy(comb, partial_rcwi, strlen(partial_rcwi));
+  memcpy(comb + strlen(partial_rcwi), out, out_len);
+  comb[comb_len] = '\0';
+  uint8_t *bin2 = NULL;
+  size_t len2 = 0;
+  rcw_ctx_t *c3 = rcw_ctx_new();
+  assert_int_equal(rcw_compile_buffer(c3, comb, comb_len, &bin2, &len2), RCW_OK);
+  assert_int_equal(len2, len);
+  free(comb);
+  rcw_free(bin2);
+  rcw_free(out);
+
+  /* with every field known there is nothing to report */
+  out = NULL;
+  assert_int_equal(rcw_decompile_buffer(c2, full_rcwi, strlen(full_rcwi),
+                                        bin, len, NULL, &out, &out_len), RCW_OK);
+  assert_null(strstr(out, "Unknown bits"));
+  assert_non_null(strstr(out, "\nB=3\n"));
+  assert_non_null(strstr(out, "\nC=1\n"));
+  rcw_free(out);
+
+  rcw_free(bin);
+  rcw_ctx_free(c1);
+  rcw_ctx_free(c2);
+  rcw_ctx_free(c3);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(test_decompile_reports_unknown_bits),
     cmocka_unit_test(test_decompile_roundtrip),
     cmocka_unit_test(test_decompile_awrite_emits_width_suffix),
     cmocka_unit_test(test_decompile_roundtrip_awrite_widths),
