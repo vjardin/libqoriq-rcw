@@ -700,15 +700,15 @@ test_pbi_awrite_alignment(void **state) {
 }
 
 /*
- * It is a legacy pbiformat=1 construct: an 8-byte CCSR write into the PBL
- * address space that forces a read-back of the previous write, encoded as
- * PBL_CMD_FLUSH | (pbladdr & RCW_PBLADDR_MASK) followed by a zero word.
- *
- * pbiformat=2 does not use it, but the encoder still accepts it for
- * compatibility, so it is exactly the kind of path that can rot unnoticed.
+ * flush is a legacy construct (pbiformat 0 and 1): an 8-byte CCSR write
+ * into the PBL address space that forces a read-back of the previous
+ * write, PBL_CMD_FLUSH | (pbladdr & RCW_PBLADDR_MASK) then a zero word.
+ * Under pbiformat=2 that word has ACS=0 and B=0, illegal,
+ * so the SP would halt on it: the encoder refuses it and names the doc's
+ * idiom instead, a Poll with mask 0.
  */
 static void
-test_pbi_flush_encoding(void **state) {
+test_pbi_flush_refused_under_pbiformat_2(void **state) {
   (void)state;
 
   static const char src[] =
@@ -721,6 +721,7 @@ test_pbi_flush_encoding(void **state) {
     "PBI_LENGTH[287:276]\n"
     "SYS_PLL_RAT=7\n"
     ".pbi\n"
+    "write 0x01e00400,0x1\n"
     "flush\n"
     ".end\n";
 
@@ -729,31 +730,42 @@ test_pbi_flush_encoding(void **state) {
   uint8_t *bin = NULL;
   size_t len = 0;
   assert_int_equal(rcw_compile_buffer(ctx, src, strlen(src), &bin, &len),
-                   RCW_OK);
-  assert_non_null(bin);
+                   RCW_ERR_PBI_SYNTAX);
+  assert_null(bin);
+  assert_non_null(strstr(rcw_ctx_last_error_detail(ctx), "poll <addr>,0,0"));
+  rcw_ctx_free(ctx);
 
-  /* Two words: the flush header, then a zero. */
-  int found = 0;
-  for (size_t i = 0; i + 8 <= len; i += 4) {
-    uint32_t w = (uint32_t)bin[i] | ((uint32_t)bin[i + 1] << 8) |
-                 ((uint32_t)bin[i + 2] << 16) | ((uint32_t)bin[i + 3] << 24);
-    uint32_t n = (uint32_t)bin[i + 4] | ((uint32_t)bin[i + 5] << 8) |
-                 ((uint32_t)bin[i + 6] << 16) | ((uint32_t)bin[i + 7] << 24);
-    if ((w & 0xFF000000u) == PBL_CMD_FLUSH && n == 0u) {
-      found = 1;
-      break;
-    }
-  }
-  assert_int_equal(found, 1);
+  /* the RM's flush, a poll with mask 0, encodes as any poll */
+  ctx = setup_ctx();
+  assert_int_equal(rcw_pbi_encode_line(ctx, "poll 0x01e00400,0,0"), RCW_OK);
+  assert_int_equal(ctx->pbi.len, 16);
+  assert_int_equal(pbi_word(ctx, 0), 0x80800000u);
+  assert_int_equal(pbi_word(ctx, 4), 0x01e00400u);
+  assert_int_equal(pbi_word(ctx, 8), 0);
+  assert_int_equal(pbi_word(ctx, 12), 0);
+  rcw_ctx_free(ctx);
+}
 
-  rcw_free(bin);
+/* The legacy encoding stays for the legacy formats, pinned for their day. */
+static void
+test_pbi_flush_legacy_encoding(void **state) {
+  (void)state;
+  rcw_ctx_t *ctx = setup_ctx();
+  ctx->vars.pbiformat = 1;
+  ctx->vars.pbladdr = 0x610000; /* the LS1 family's PBL window */
+
+  assert_int_equal(rcw_pbi_encode_line(ctx, "flush"), RCW_OK);
+  assert_int_equal(ctx->pbi.len, 8);
+  assert_int_equal(pbi_word(ctx, 0), PBL_CMD_FLUSH | 0x610000u);
+  assert_int_equal(pbi_word(ctx, 4), 0);
   rcw_ctx_free(ctx);
 }
 
 int
 main(void) {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_pbi_flush_encoding),
+    cmocka_unit_test(test_pbi_flush_refused_under_pbiformat_2),
+    cmocka_unit_test(test_pbi_flush_legacy_encoding),
     cmocka_unit_test(test_eval_simple),
     cmocka_unit_test(test_eval_complex),
     cmocka_unit_test(test_eval_python_literals),

@@ -276,6 +276,10 @@ The text consumed by **rcw_compile_file**() (after preprocessing) and by
     The target is a byte offset counted from the start of the jump
     itself, a multiple of 4 above 8, or a label:
 
+    **flush** is a command of the legacy PBI formats and has no
+    pbiformat=2 encoding. The flush is a Poll with an all-zero mask:
+    **poll** *addr*,0,0.
+
 **.uboot** / **.end**
 :   Embeds a u-boot binary image into the PBI stream for SPI/SD/NAND
     boot chains. The body is an **xxd**(1) hex dump of *u-boot.bin*

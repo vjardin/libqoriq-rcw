@@ -1099,8 +1099,13 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     return pbi_pack_word(ctx, PBL_CMD_LOADACWINDOW | params[0]);
 
   } else if (strcmp(op, "flush") == 0) {
-    /* flush uses pbladdr for old format; for pbiformat=2 it
-     * shouldn't appear, but encode it anyway for compatibility */
+    if (ctx->vars.pbiformat == 2) {
+      rcw_set_error(ctx,
+          "\"flush\" is a legacy command with no pbiformat=2 encoding; "
+          "use \"poll <addr>,0,0\", a Poll with mask 0 is the flush: %s",
+          line);
+      return RCW_ERR_PBI_SYNTAX;
+    }
     err = pbi_pack_word(ctx,
         PBL_CMD_FLUSH | (ctx->vars.pbladdr & RCW_PBLADDR_MASK));
     if (err != RCW_OK)
