@@ -18,23 +18,6 @@
 #include "rcw_internal.h"
 
 /*
- * Bounds for the address fields in PBI command words. Anything past
- * these values OR-overflows into the command-type bits and silently
- * corrupts the encoded command.
- *
- *   write/write.b1 : CCSR address [27:0]   (Section 8.3.2.1, Table 32)
- *   awrite[.b3-b5] : AltConfig offset [25:0] (Section 8.3.2.2, Table 34)
- *   loadacwindow   : ALTCFG_WNDW [13:0]    (Section 8.3.6,  Table 39)
- *   blockcopy SRC  : interface byte [7:0]  (Section 8.3.3,  Table 36)
- */
-#define PBI_CCSR_ADDR_MAX     0x0FFFFFFFu
-#define PBI_AWRITE_ADDR_MAX   0x03FFFFFFu
-#define PBI_ACWINDOW_MAX      0x00003FFFu
-#define PBI_BLOCKCOPY_SRC_MAX 0x000000FFu
-/* CCSR destination address is a 28-bit field (RM Tables 37 and 43). */
-#define PBI_CCSR_ADDR_MAX     0x0FFFFFFFu
-
-/*
  * Maximum nesting depth of parens / unary ops in the expression
  * evaluator. mcpp-expanded bitfield expressions never go past depth
  * ~5 in real .rcw inputs; 64 is generous and bounds adversarial
@@ -710,13 +693,14 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
      * .b1 from a mask of 0x000000FF would silently turn a 32-bit register
      * access into an 8-bit one.
      */
-    uint32_t ops = (strcmp(op, "ccsrset") == 0) ? 0u
-                 : (strcmp(op, "ccsrclear") == 0) ? 1u : 2u;
-    int want = (ops == 2u) ? 3 : 2;
+    uint32_t ops = (strcmp(op, "ccsrset") == 0) ? PBI_RMW_OPS_SET
+                 : (strcmp(op, "ccsrclear") == 0) ? PBI_RMW_OPS_CLEAR
+                 : PBI_RMW_OPS_REPLACE;
+    int want = (ops == PBI_RMW_OPS_REPLACE) ? 3 : 2;
     if (nparam < want) {
       rcw_set_error(ctx,
           "\"%s\" requires %d parameters (addr, mask%s): %s",
-          op, want, (ops == 2u) ? ", data" : "", line);
+          op, want, (ops == PBI_RMW_OPS_REPLACE) ? ", data" : "", line);
       return RCW_ERR_PBI_SYNTAX;
     }
     uint32_t mtype;
@@ -757,7 +741,7 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     }
     err = pbi_pack_word(ctx,
         PBL_CMD_GENERAL | (PBI_GENCMD_CCSR_RMW << PBI_CMD_SHIFT) |
-        (ops << 2) | mtype);
+        (ops << PBI_RMW_OPS_SHIFT) | mtype);
     if (err != RCW_OK)
       return err;
     err = pbi_pack_word(ctx, params[0]);
@@ -767,7 +751,7 @@ rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line) {
     if (err != RCW_OK)
       return err;
     /* Data word is present for all three; the SP ignores it unless REPLACE. */
-    return pbi_pack_word(ctx, (ops == 2u) ? params[2] : 0u);
+    return pbi_pack_word(ctx, (ops == PBI_RMW_OPS_REPLACE) ? params[2] : 0u);
 
   } else if (strcmp(op, "loadcondition") == 0) {
     if (nparam < 2) {

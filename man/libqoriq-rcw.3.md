@@ -319,6 +319,9 @@ if (err == RCW_OK) {
   platforms using **%pbiformat=0** or **%pbiformat=1** are not supported and
   will return **RCW_ERR_UNSUPPORTED**.
 
+- A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
+  128-byte RCW and the 4-byte checksum, then the PBI commands.
+
 - The library uses a custom CRC-32 implementation with polynomial
   **0x04C11DB7** and initial value **0xFFFFFFFF**. This is not compatible with
   the standard zlib **crc32()**.

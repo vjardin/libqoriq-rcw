@@ -99,7 +99,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
 
     uint8_t hdr = (uint8_t)((word & PBI_HDR_MASK) >> PBI_HDR_SHIFT);
 
-    if (hdr == 0x80) {
+    if (hdr == PBI_HDR_GENERAL) {
       /* General command */
       uint8_t cmd = (uint8_t)((word & PBI_CMD_MASK) >> PBI_CMD_SHIFT);
 
@@ -108,10 +108,10 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
         uint32_t a1 = unpack(pbi + i); i += 4;
         uint32_t a2 = unpack(pbi + i); i += 4;
         uint32_t a3 = unpack(pbi + i); i += 4;
-        strbuf_printf(sb, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x\n", word & 0xFF, a1, a2, a3);
+        strbuf_printf(sb, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x\n", word & PBI_BLOCKCOPY_SRC_MAX, a1, a2, a3);
 
       } else if (cmd == PBI_GENCMD_LOADACWINDOW) {
-        strbuf_printf(sb, "loadacwindow 0x%08x\n", word & 0x3FFF);
+        strbuf_printf(sb, "loadacwindow 0x%08x\n", word & PBI_ACWINDOW_MAX);
 
       } else if (cmd == PBI_GENCMD_LOADCONDITION && i + 8 <= pbi_len) {
         uint32_t a1 = unpack(pbi + i); i += 4;
@@ -131,7 +131,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
         strbuf_printf(sb, "poll.long 0x%08x,0x%08x,0x%08x\n", a1, a2, a3);
 
       } else if (cmd == PBI_GENCMD_WAIT) {
-        strbuf_printf(sb, "wait 0x%08x\n", word & 0xFFFF);
+        strbuf_printf(sb, "wait 0x%08x\n", word & PBI_PARAM_MASK);
 
       } else if (cmd == PBI_GENCMD_CRC_STOP && i + 4 <= pbi_len) {
         uint32_t crc = unpack(pbi + i); i += 4;
@@ -145,7 +145,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
       } else if (cmd == PBI_GENCMD_CCSR_COPY && i + 12 <= pbi_len) {
         /* RM Table 37: 16 B, word type in the low 2 bits of the header. */
         static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
-        uint32_t wt   = word & 0x3u;
+        uint32_t wt   = word & PBI_CCSR_COPY_TYPE_MASK;
         uint32_t src  = unpack(pbi + i); i += 4;
         uint32_t dst  = unpack(pbi + i); i += 4;
         uint32_t nw   = unpack(pbi + i); i += 4;
@@ -161,12 +161,12 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
         static const char *msuf[4] = { "?", "b1", "b2", "b4" };
         static const char *opnm[4] = { "ccsrset", "ccsrclear",
                                        "ccsrreplace", "ccsrreserved" };
-        uint32_t mt   = word & 0x3u;
-        uint32_t ops  = (word >> 2) & 0x3u;
+        uint32_t mt   = word & PBI_RMW_MASK_TYPE_MASK;
+        uint32_t ops  = (word >> PBI_RMW_OPS_SHIFT) & PBI_RMW_OPS_MASK;
         uint32_t addr = unpack(pbi + i); i += 4;
         uint32_t mask = unpack(pbi + i); i += 4;
         uint32_t data = unpack(pbi + i); i += 4;
-        if (ops == 2u)
+        if (ops == PBI_RMW_OPS_REPLACE)
           strbuf_printf(sb, "%s.%s 0x%08x,0x%08x,0x%08x\n",
                         opnm[ops], msuf[mt], addr, mask, data);
         else
@@ -213,7 +213,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
 
       }
 
-    } else if ((hdr & 0xC0) == 0x00) {
+    } else if ((hdr & (PBI_HDR_ACS | PBI_HDR_RSVD)) == 0) {
       /* CCSR write */
       uint8_t cmd = (hdr & PBI_CCSR_TYPE_MASK) >> PBI_CCSR_TYPE_SHIFT;
       if (cmd == PBI_CCSR_WRITE_B1 && i + 4 <= pbi_len) {
@@ -229,7 +229,7 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi,
 
       }
 
-    } else if ((hdr & 0xC0) == 0x80) {
+    } else if ((hdr & (PBI_HDR_ACS | PBI_HDR_RSVD)) == PBI_HDR_ACS) {
       /* Altconfig write */
       uint8_t bcnt = (hdr & PBI_AWRITE_B_MASK) >> PBI_AWRITE_B_RSHIFT;
       if (bcnt) {
@@ -326,12 +326,12 @@ rcw_decompile(rcw_ctx_t *ctx, const uint8_t *binary, size_t len, char **out_sour
    * older check (len > RCW_SIZE_BYTES) accepted any 129+-byte input
    * starting with the preamble, which then over-read the RCW area.
    */
-  size_t pbl_min = 4 + 4 + RCW_SIZE_BYTES + 4;
-  if (len >= pbl_min && memcmp(binary, preamble_bytes, 4) == 0) {
-    /* Has preamble: skip 8 bytes (preamble + load RCW cmd) */
-    rcw_data = binary + 8;
-    /* Skip checksum (4 bytes after RCW) */
-    size_t pbi_start = 8 + RCW_SIZE_BYTES + 4;
+  size_t pbl_min = RCW_PBL_PBI_OFFSET;
+  if (len >= pbl_min && memcmp(binary, preamble_bytes, sizeof(preamble_bytes)) == 0) {
+    /* Has preamble: the RCW follows the preamble and the Load RCW command word */
+    rcw_data = binary + RCW_PBL_RCW_OFFSET;
+    /* The PBI follows the checksum word */
+    size_t pbi_start = RCW_PBL_PBI_OFFSET;
     if (pbi_start < len) {
       pbi_data = binary + pbi_start;
       pbi_len = len - pbi_start;

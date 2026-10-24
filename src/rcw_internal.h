@@ -31,6 +31,21 @@
  */
 #define RCW_SIZE_BITS  1024
 #define RCW_SIZE_BYTES (RCW_SIZE_BITS / 8)
+_Static_assert(RCW_SIZE_BYTES == RCW_PBL_RCW_BYTES, "the public envelope disagrees with the RCW size");
+
+/*
+ * Every PBI command is a whole number of 32-bit words: the
+ * command word, then its operand words.
+ */
+#define PBI_WORD_BYTES 4
+
+/*
+ * Load RCW carries the 32 RCW words and then the checksum word,
+ * 33 operands: 128 / 4 + 1. PBL_RCW_WORDS is also the index of the checksum
+ * among them.
+ */
+#define PBL_RCW_WORDS      (RCW_SIZE_BYTES / PBI_WORD_BYTES)
+#define PBL_LOAD_RCW_WORDS (PBL_RCW_WORDS + 1)
 
 /*
  * CRC-32 parameters for PBI command validation.
@@ -175,6 +190,7 @@
  * See Tables 48-49 in Section 8.3.15-8.3.16.
  */
 #define PBL_TERMINATOR_WORDS     2
+#define PBL_TERMINATOR_BYTES     (PBL_TERMINATOR_WORDS * PBI_WORD_BYTES)
 
 /*
  * LX2160A Service Processor scratch ceiling for the total PBL image
@@ -198,6 +214,17 @@
 #define PBI_HDR_SHIFT            24
 #define PBI_CMD_MASK             0x00FF0000
 #define PBI_CMD_SHIFT            16
+#define PBI_PARAM_MASK           0x0000FFFF
+
+/*
+ * Header byte:
+ *  - bit 7 is ACS (bit 31 of the word, the one PBL_CMD_GENERAL sets),
+ *  - bit 6 is reserved and always 0.
+ * A general command has the header 0x80: ACS set and every other bit clear.
+ */
+#define PBI_HDR_ACS              0x80
+#define PBI_HDR_RSVD             0x40
+#define PBI_HDR_GENERAL          PBI_HDR_ACS
 
 /* CCSR Write: 28-bit address in bits [27:0] (Section 8.3.2.1). */
 #define PBI_CCSR_ADDR_MASK       0x0FFFFFFF
@@ -208,6 +235,23 @@
 /* AltConfig Write: B field in header byte, bits [5:2] (Section 8.3.2.2). */
 #define PBI_AWRITE_B_MASK        0x3C
 #define PBI_AWRITE_B_RSHIFT      2
+/* The 4-bit B field once shifted down: bits [29:26] of the word, PBI_AWRITE_B_SHIFT. */
+#define PBI_AWRITE_B_BITS        (PBI_AWRITE_B_MASK >> PBI_AWRITE_B_RSHIFT)
+
+/*
+ * Bounds of the fields the encoder fills in a command word, and the masks
+ * the decompiler reads them back with. Anything past these values
+ * OR-overflows into the command-type bits and silently corrupts the word.
+ *
+ *   write/write.b1 : CCSR address [27:0]
+ *   awrite[.b3-b5] : AltConfig offset [25:0]
+ *   loadacwindow   : ALTCFG_WNDW [13:0]
+ *   blockcopy SRC  : interface byte [7:0]
+ */
+#define PBI_CCSR_ADDR_MAX        0x0FFFFFFFu
+#define PBI_AWRITE_ADDR_MAX      0x03FFFFFFu
+#define PBI_ACWINDOW_MAX         0x00003FFFu
+#define PBI_BLOCKCOPY_SRC_MAX    0x000000FFu
 
 /* CCSR Write: B field in header byte, bits [5:4] (Section 8.3.2.1). */
 #define PBI_CCSR_TYPE_MASK       0x30
@@ -240,6 +284,22 @@
  */
 #define PBI_CCSR_WRITE_B1        0x1
 #define PBI_CCSR_WRITE_B4        0x3
+
+/*
+ * CCSR Write from Address and CCSR Read, Modify, Write
+ * keep their options in the low byte of the command word:
+ *  - the word type in bits [1:0]
+ *  - the ops type in bits [3:2]
+ *  - the mask type in bits [1:0]
+ * Types 1, 2 and 3 are 1, 2 and 4 bytes; 0 is invalid.
+ */
+#define PBI_CCSR_COPY_TYPE_MASK  0x3u
+#define PBI_RMW_MASK_TYPE_MASK   0x3u
+#define PBI_RMW_OPS_SHIFT        2
+#define PBI_RMW_OPS_MASK         0x3u
+#define PBI_RMW_OPS_SET          0u
+#define PBI_RMW_OPS_CLEAR        1u
+#define PBI_RMW_OPS_REPLACE      2u
 
 /*
  * Decompile output: fields wider than this many bits are printed

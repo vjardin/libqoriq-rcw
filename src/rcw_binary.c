@@ -78,7 +78,7 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
   for (size_t i = 0; i < ctx->symbols.count; i++) {
     rcw_symbol_t *sym = &ctx->symbols.entries[i];
     if (strcmp(sym->name, "PBI_LENGTH") == 0 && !sym->has_value) {
-      uint64_t pbilen = ctx->pbi.len / 4;
+      uint64_t pbilen = ctx->pbi.len / PBI_WORD_BYTES;
       if (ctx->pbl)
         pbilen += PBL_TERMINATOR_WORDS; /* CRC+Stop or Stop */
       sym->has_value = true;
@@ -105,13 +105,13 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
    */
   size_t total = 0;
   if (ctx->pbl)
-    total += 8; /* preamble + load RCW command */
+    total += RCW_PBL_RCW_OFFSET; /* preamble, Load RCW command word */
   total += RCW_SIZE_BYTES;
   if (ctx->pbl)
-    total += 4; /* checksum */
+    total += PBI_WORD_BYTES; /* checksum word */
   total += ctx->pbi.len;
   if (ctx->pbl)
-    total += 8; /* terminator */
+    total += PBL_TERMINATOR_BYTES; /* Stop, or CRC and Stop */
 
   /*
    * LX2160A SP scratch ceiling: see PBL_SP_SCRATCH_CEILING_BYTES
@@ -143,13 +143,13 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
   /* Preamble */
   if (ctx->pbl) {
     pack(binary + pos, PBL_PREAMBLE);
-    pos += 4;
+    pos += PBI_WORD_BYTES;
 
     if (ctx->vars.loadwochecksum)
       pack(binary + pos, PBL_CMD_LOAD_RCW_NOCS);
     else
       pack(binary + pos, PBL_CMD_LOAD_RCW);
-    pos += 4;
+    pos += PBI_WORD_BYTES;
   }
 
   /* RCW data */
@@ -162,12 +162,12 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
       pack(binary + pos, 0x00000000);
     } else {
       uint32_t checksum = 0;
-      for (size_t i = 0; i < pos; i += 4) {
+      for (size_t i = 0; i < pos; i += PBI_WORD_BYTES) {
         checksum += unpack_le32(binary + i);
       }
       pack(binary + pos, checksum);
     }
-    pos += 4;
+    pos += PBI_WORD_BYTES;
   }
 
   /* PBI data */
@@ -181,9 +181,9 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
     if (ctx->vars.nocrc) {
       /* Stop command (no CRC) */
       pack(binary + pos, PBL_CMD_STOP);
-      pos += 4;
+      pos += PBI_WORD_BYTES;
       pack(binary + pos, 0x00000000);
-      pos += 4;
+      pos += PBI_WORD_BYTES;
     } else {
       /* CRC and Stop */
       uint32_t cmd = PBL_CMD_CRC_STOP;
@@ -194,7 +194,7 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
      * CRC covers PBI data + stop command word.
      * Matches rcw.py line 716: crcbinary = pbi
      */
-    size_t crc_len = ctx->pbi.len + 4;
+    size_t crc_len = ctx->pbi.len + PBI_WORD_BYTES; /* plus the command word */
     uint8_t *crc_input = malloc(crc_len);
     if (!crc_input) {
       free(binary);
@@ -202,7 +202,7 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
     }
     if (ctx->pbi.len > 0)
       memcpy(crc_input, ctx->pbi.data, ctx->pbi.len);
-    memcpy(crc_input + ctx->pbi.len, cmd_bytes, 4);
+    memcpy(crc_input + ctx->pbi.len, cmd_bytes, PBI_WORD_BYTES);
 
     /*
      * Apply classicbitnumbers bit-reversal to CRC input.
@@ -226,9 +226,9 @@ rcw_binary_generate(rcw_ctx_t *ctx, uint8_t **out_data, size_t *out_len) {
     crc ^= RCW_CRC32_INIT;
 
     pack(binary + pos, cmd);
-    pos += 4;
+    pos += PBI_WORD_BYTES;
     pack(binary + pos, crc);
-    pos += 4;
+    pos += PBI_WORD_BYTES;
     }
   }
 

@@ -108,6 +108,23 @@ rcw_error_t rcw_decompile_buffer(rcw_ctx_t *ctx, const char *rcwi_preprocessed, 
 rcw_error_t rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path, char **out, size_t *out_len);
 
 /*
+ * PBL image envelope
+ *
+ * A PBL image is the preamble, the Load RCW command with its 32 RCW words
+ * and checksum, then the PBI commands:
+ *
+ *   byte   0  preamble          0xAA55AA55                 4 bytes
+ *   byte   4  Load RCW command  0x80100000 or 0x80110000   4 bytes
+ *   byte   8  RCW               32 words                 128 bytes
+ *   byte 136  checksum, or zero padding                    4 bytes
+ *   byte 140  the first PBI command
+ */
+#define RCW_PBL_RCW_OFFSET      (4 + 4)                                   /* preamble, Load RCW command word */
+#define RCW_PBL_RCW_BYTES       (1024 / 8)                                /* the 1024-bit RCW */
+#define RCW_PBL_CHECKSUM_OFFSET (RCW_PBL_RCW_OFFSET + RCW_PBL_RCW_BYTES)  /* 136 */
+#define RCW_PBL_PBI_OFFSET      (RCW_PBL_CHECKSUM_OFFSET + 4)             /* 140 */
+
+/*
  * Error information
  */
 const char *rcw_strerror(rcw_error_t err);
