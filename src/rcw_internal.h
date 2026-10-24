@@ -455,6 +455,7 @@ uint64_t rcw_bits_extract(const uint8_t data[RCW_SIZE_BYTES], int begin, int end
 
 /* rcw_parse.c */
 rcw_error_t rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len);
+rcw_error_t rcw_parse_literal(const char *s, const char **end, uint64_t *out);
 
 /* rcw_pbi.c */
 rcw_error_t rcw_pbi_encode_line(rcw_ctx_t *ctx, const char *line);

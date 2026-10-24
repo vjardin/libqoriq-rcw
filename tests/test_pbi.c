@@ -66,6 +66,25 @@ test_eval_complex(void **state) {
   assert_int_equal(result, 0x80);
 }
 
+/* Operands are Python literals: 0b and 0o exist, C octal does not. */
+static void
+test_eval_python_literals(void **state) {
+  (void)state;
+  uint32_t r;
+
+  assert_int_equal(rcw_eval_expr("0b1010", &r), RCW_OK);
+  assert_int_equal(r, 10);
+  assert_int_equal(rcw_eval_expr("0o17", &r), RCW_OK);
+  assert_int_equal(r, 15);
+  assert_int_equal(rcw_eval_expr("0x10 + 0B1", &r), RCW_OK);
+  assert_int_equal(r, 17);
+  assert_int_equal(rcw_eval_expr("1_000", &r), RCW_OK);
+  assert_int_equal(r, 1000);
+  assert_int_equal(rcw_eval_expr("0", &r), RCW_OK);
+  assert_int_equal(r, 0);
+  assert_int_equal(rcw_eval_expr("010", &r), RCW_ERR_PBI_SYNTAX);
+}
+
 /* Test write command */
 static void
 test_pbi_write(void **state) {
@@ -551,6 +570,7 @@ main(void) {
     cmocka_unit_test(test_pbi_flush_encoding),
     cmocka_unit_test(test_eval_simple),
     cmocka_unit_test(test_eval_complex),
+    cmocka_unit_test(test_eval_python_literals),
     cmocka_unit_test(test_pbi_write),
     cmocka_unit_test(test_pbi_write_b1),
     cmocka_unit_test(test_pbi_awrite),

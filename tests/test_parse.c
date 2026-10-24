@@ -454,6 +454,65 @@ test_parse_name_too_long(void **state) {
   rcw_ctx_free(ctx);
 }
 
+static void
+test_parse_python_literals(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=0x400\n"
+    "%pbiformat=0b10\n"
+    "A[7:0]\n"
+    "B[15:8]\n"
+    "C[23:16]\n"
+    "D[31:24]\n"
+    "E[39:32]\n"
+    "F[0b10000000]\n"
+    "A=0b1010\n"
+    "B=0o17\n"
+    "C=0X1f\n"
+    "D=1_0\n"
+    "E=00\n"
+    "F=1\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  assert_non_null(ctx);
+  assert_int_equal(rcw_parse(ctx, src, strlen(src)), RCW_OK);
+  assert_int_equal(ctx->vars.size, 1024);
+  assert_int_equal(ctx->vars.pbiformat, 2);
+  assert_int_equal(ctx->symbols.count, 6);
+  assert_int_equal(ctx->symbols.entries[0].value, 10);
+  assert_int_equal(ctx->symbols.entries[1].value, 15);
+  assert_int_equal(ctx->symbols.entries[2].value, 31);
+  assert_int_equal(ctx->symbols.entries[3].value, 10);
+  assert_true(ctx->symbols.entries[4].has_value);
+  assert_int_equal(ctx->symbols.entries[4].value, 0);
+  assert_int_equal(ctx->symbols.entries[5].begin, 128);
+  assert_int_equal(ctx->symbols.entries[5].end, 128);
+  assert_int_equal(ctx->symbols.entries[5].value, 1);
+  rcw_ctx_free(ctx);
+}
+
+static void
+test_parse_value_leading_zero_rejected(void **state) {
+  (void)state;
+  const char src[] =
+    "%size=1024\n"
+    "%pbiformat=2\n"
+    "FOO[7:0]\n"
+    "FOO=010\n"
+    "BAR[15:8]\n"
+    "BAR=0b\n"
+    "BAZ[23:16]\n"
+    "BAZ=1__0\n";
+
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  assert_int_equal(rcw_parse(ctx, src, strlen(src)), RCW_OK);
+  assert_int_equal(ctx->symbols.count, 3);
+  assert_false(ctx->symbols.entries[0].has_value);
+  assert_false(ctx->symbols.entries[1].has_value);
+  assert_false(ctx->symbols.entries[2].has_value);
+  rcw_ctx_free(ctx);
+}
+
 int
 main(void) {
   const struct CMUnitTest tests[] = {
@@ -474,6 +533,8 @@ main(void) {
     cmocka_unit_test(test_parse_value_negative),
     cmocka_unit_test(test_parse_value_trailing_garbage),
     cmocka_unit_test(test_parse_name_too_long),
+    cmocka_unit_test(test_parse_python_literals),
+    cmocka_unit_test(test_parse_value_leading_zero_rejected),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

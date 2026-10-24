@@ -467,6 +467,8 @@ int check_pbl(const uint8_t *buf, size_t len)
   because the C preprocessor expands macros to expressions like
   **(0x1ea0000 + (0x100 \* (0)) + 0x0800)**.
 
+- Numbers are read as Python's **int(x, 0)** reads them
+
 # SEE ALSO
 
 **qoriq-rcw**(1), **mcpp**(1), **pkg-config**(1), **xxd**(1)

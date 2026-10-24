@@ -7,7 +7,6 @@
  */
 
 #include <ctype.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,34 +15,99 @@
 
 #include "rcw_internal.h"
 
+/* Read an unsigned integer literal the way Python's int(x, 0) does */
+rcw_error_t
+rcw_parse_literal(const char *s, const char **end, uint64_t *out) {
+  unsigned base = 10;
+  const char *p = s;
+
+  if (!s)
+    return RCW_ERR_PARSE;
+
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    base = 16;
+    p += 2;
+  } else if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
+    base = 8;
+    p += 2;
+  } else if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
+    base = 2;
+    p += 2;
+  }
+
+  uint64_t v = 0;
+  size_t ndigits = 0;
+  bool nonzero = false;
+  bool leading_zero = (base == 10 && p[0] == '0');
+
+  for (;;) {
+    unsigned d;
+
+    if (*p >= '0' && *p <= '9')
+      d = (unsigned)(*p - '0');
+    else if (*p >= 'a' && *p <= 'f')
+      d = (unsigned)(*p - 'a' + 10);
+    else if (*p >= 'A' && *p <= 'F')
+      d = (unsigned)(*p - 'A' + 10);
+    else if (*p == '_' && ndigits > 0 && p[1] != '_' && p[1] != '\0') {
+      p++;
+      continue;
+    } else {
+      break;
+    }
+    if (d >= base)
+      break;
+    if (v > (UINT64_MAX - d) / base)
+      return RCW_ERR_PARSE;
+    v = v * base + d;
+    nonzero = nonzero || d != 0;
+    ndigits++;
+    p++;
+  }
+
+  if (ndigits == 0)
+    return RCW_ERR_PARSE;
+  /* "0", "00" are fine; "010" is not a Python literal */
+  if (leading_zero && nonzero)
+    return RCW_ERR_PARSE;
+
+  if (end)
+    *end = p;
+  *out = v;
+  return RCW_OK;
+}
+
+/* A whole string as one literal: nothing before, nothing after. */
+static rcw_error_t
+parse_whole_literal(const char *s, uint64_t *out) {
+  const char *end;
+
+  if (!s || !*s)
+    return RCW_ERR_PARSE;
+  if (rcw_parse_literal(s, &end, out) != RCW_OK)
+    return RCW_ERR_PARSE;
+  if (*end != '\0')
+    return RCW_ERR_PARSE;
+  return RCW_OK;
+}
+
 /*
  * Parse a non-negative integer position that must fit inside the
  * 1024-bit RCW. Used for NAME[begin:end] / NAME[pos] declarations.
  *
- * Rejects:
- *   - leading '-' (no negative bit positions)
- *   - empty input or trailing garbage after the digits
- *   - strtoul ERANGE
- *   - value >= RCW_SIZE_BITS
+ * Rejects a leading '-' (no negative bit positions), empty input,
+ * trailing garbage after the digits, and a value >= RCW_SIZE_BITS.
  *
  * Without this, "FOO[2000:2000]" reaches set_bits() with bytepos=250
  * and writes past the 128-byte stack buffer.
  */
 static rcw_error_t
 parse_bitpos(const char *s, int *out) {
-  if (!s || !*s)
-    return RCW_ERR_PARSE;
-  if (*s == '-')
-    return RCW_ERR_PARSE;
+  uint64_t v;
 
-  errno = 0;
-  char *endptr;
-  unsigned long v = strtoul(s, &endptr, 0);
-  if (endptr == s || *endptr != '\0')
+  if (parse_whole_literal(s, &v) != RCW_OK)
     return RCW_ERR_PARSE;
-  if (errno == ERANGE)
-    return RCW_ERR_PARSE;
-  if (v >= (unsigned long)RCW_SIZE_BITS)
+  if (v >= (uint64_t)RCW_SIZE_BITS)
     return RCW_ERR_PARSE;
 
   *out = (int)v;
@@ -53,30 +117,14 @@ parse_bitpos(const char *s, int *out) {
 /*
  * Parse an unsigned 64-bit value for NAME=value.
  *
- * Rejects:
- *   - leading '-' (assignment is to an unsigned bitfield)
- *   - empty input or trailing garbage
- *   - strtoull ERANGE
+ * Rejects a leading '-' (assignment is to an unsigned bitfield), empty
+ * input, trailing garbage and values beyond 64 bits.
  *
  * Width vs. field check happens later in rcw_bits_pack().
  */
 static rcw_error_t
 parse_field_value(const char *s, uint64_t *out) {
-  if (!s || !*s)
-    return RCW_ERR_PARSE;
-  if (*s == '-')
-    return RCW_ERR_PARSE;
-
-  errno = 0;
-  char *endptr;
-  unsigned long long v = strtoull(s, &endptr, 0);
-  if (endptr == s || *endptr != '\0')
-    return RCW_ERR_PARSE;
-  if (errno == ERANGE)
-    return RCW_ERR_PARSE;
-
-  *out = (uint64_t)v;
-  return RCW_OK;
+  return parse_whole_literal(s, out);
 }
 
 /* Find a symbol by name, return index or -1. */
@@ -136,7 +184,8 @@ parse_variable(rcw_ctx_t *ctx, const char *line) {
   name[nlen] = '\0';
 
   const char *valstr = eq + 1;
-  unsigned long val = strtoul(valstr, NULL, 0);
+  uint64_t val = 0;
+  (void)parse_whole_literal(valstr, &val);
 
   if (strcmp(name, "size") == 0)
     ctx->vars.size = (int)val;
@@ -152,7 +201,6 @@ parse_variable(rcw_ctx_t *ctx, const char *line) {
     ctx->vars.loadwochecksum = (val != 0);
   else if (strcmp(name, "pbladdr") == 0)
     ctx->vars.pbladdr = (uint32_t)strtoul(valstr, NULL, 16);
-  /* Silently ignore unknown variables (like rcw.py) */
 
   return RCW_OK;
 }

@@ -28,7 +28,8 @@
 /*
  * Minimal recursive descent expression evaluator.
  *
- * Handles: integer literals (decimal, 0x hex, 0 octal), parentheses,
+ * Handles: integer literals as Python reads them (decimal, 0x, 0o, 0b;
+ * see rcw_parse_literal), parentheses,
  * and operators: + - * / & | ^ << >> ~
  *
  * Needed because the preprocessor expands macros to expressions like:
@@ -81,11 +82,12 @@ eval_primary(eval_state_t *st) {
     st->pos++;
     result = ~eval_primary(st);
   } else if (isdigit((unsigned char)*st->pos)) {
-    char *endptr;
-    errno = 0;
-    unsigned long uv = strtoul(st->pos, &endptr, 0);
-    if (errno == ERANGE || uv > UINT32_MAX)
+    const char *endptr;
+    uint64_t uv;
+    if (rcw_parse_literal(st->pos, &endptr, &uv) != RCW_OK || uv > UINT32_MAX) {
       st->err = RCW_ERR_PBI_SYNTAX;
+      endptr = st->pos + 1;
+    }
     st->pos = endptr;
     result = (uint32_t)uv;
   } else {
