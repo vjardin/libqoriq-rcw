@@ -2,8 +2,8 @@
 title: LIBQORIQ-RCW
 section: 3
 header: Library Functions
-footer: libqoriq-rcw 0.1.0
-date: 2026-04-12
+footer: libqoriq-rcw 1.3.0
+date: 2026-10-25
 ---
 
 <!-- SPDX-License-Identifier: BSD-3-Clause -->
@@ -26,6 +26,7 @@ rcw_error_t rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *val
 rcw_error_t rcw_ctx_set_pbl(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_warnings(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_bitfield(rcw_ctx_t *ctx, const char *name, uint64_t value);
+rcw_error_t rcw_ctx_set_bitfield_text(rcw_ctx_t *ctx, const char *text);
 
 rcw_error_t rcw_compile_file(rcw_ctx_t *ctx, const char *input_path, uint8_t **out_data, size_t *out_len);
 rcw_error_t rcw_compile_buffer(rcw_ctx_t *ctx, const char *preprocessed, size_t len, uint8_t **out_data, size_t *out_len);
@@ -43,9 +44,11 @@ rcw_error_t rcw_preprocess_file(rcw_ctx_t *ctx, const char *input_path,
 rcw_error_t rcw_pbi_decode(const uint8_t *buf, size_t len, int littleendian,
                            rcw_pbi_cmd_t *cmd);
 const char *rcw_pbi_op_name(rcw_pbi_op_t op);
+int         rcw_pbi_to_source(const rcw_pbi_cmd_t *cmd, char *buf, size_t size);
 
 rcw_error_t rcw_pbl_parse(const uint8_t *buf, size_t len, int littleendian,
                           rcw_pbl_t *pbl);
+void        rcw_pbl_from_rcw(const uint8_t rcw[128], rcw_pbl_t *pbl);
 uint32_t    rcw_pbi_crc(const uint8_t *pbi, size_t len);
 
 typedef void (*rcw_pbi_visit_t)(const rcw_pbi_cmd_t *cmd, size_t off,
@@ -53,6 +56,9 @@ typedef void (*rcw_pbi_visit_t)(const rcw_pbi_cmd_t *cmd, size_t off,
 rcw_error_t rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian,
                           rcw_pbi_visit_t visit, void *arg,
                           rcw_pbi_check_t *chk);
+rcw_error_t rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian,
+                           rcw_pbi_visit_t visit, void *arg,
+                           rcw_pbl_report_t *rep);
 
 const char *rcw_strerror(rcw_error_t err);
 const char *rcw_ctx_last_error_detail(const rcw_ctx_t *ctx);
@@ -94,7 +100,10 @@ These functions configure the context before compilation or decompilation.
 **rcw_ctx_add_define**(*ctx*, *name*, *value*)
 :   Define a preprocessor macro for **rcw_compile_file**(),
     **rcw_decompile_file**() and **rcw_preprocess_file**(): *-Dname=value*
-    to **mcpp**, or *-Dname* (defined as 1) when *value* is NULL.
+    to **mcpp**, or *-Dname* (defined as 1) when *value* is NULL. With
+    *value* NULL, *name* may carry the value itself, *NAME=VALUE*, as the
+    **-D** option of a C compiler takes it. Returns **RCW_ERR_PARSE**
+    unless the name is an identifier.
 
 **rcw_ctx_set_pbl**(*ctx*, *enable*)
 :   Enable (*enable* != 0) or disable (*enable* == 0) generation of the PBL
@@ -110,6 +119,13 @@ These functions configure the context before compilation or decompilation.
     will be set to *value* after source parsing, overriding any assignment in
     the source file. This is equivalent to **qoriq-rcw -D** on the command
     line. May be called multiple times (up to 64 overrides).
+
+**rcw_ctx_set_bitfield_text**(*ctx*, *text*)
+:   The same override from its command-line form *NAME=VALUE*, as
+    **rcw.py -D** takes it: *VALUE* reads like Python's **int(x, 0)** -
+    decimal, **0x**, **0o** or **0b**, a decimal with a leading zero
+    refused. Returns **RCW_ERR_PARSE** on bad syntax, with the detail in
+    **rcw_ctx_last_error_detail**().
 
 ## Forward Compilation
 
@@ -183,6 +199,15 @@ The decoder delimits and decodes.
     **"stop"** for the three commands that have none, and **"unknown"**
     for **RCW_PBI_UNKNOWN** or any other value.
 
+**rcw_pbi_to_source**(*cmd*, *buf*, *size*)
+:   Write into *buf* the *.pbi* source line of the decoded *cmd*, as the
+    decompiler prints it: **write 0x01e00620,0x80000000**,
+    **awrite.b4 0x00100000,0x...,0x...**, **jump 0x0000000c** (a byte
+    offset: the labels are the decompiler's) and a comment for the three
+    commands without a mnemonic. No newline. Returns the length the line
+    would have, as **snprintf**(3) does; **RCW_PBI_SOURCE_MAX** bytes hold
+    any line.
+
 ## PBL Image Envelope
 
 A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
@@ -195,7 +220,14 @@ A PBL image is the 4-byte preamble, the 4-byte Load RCW command word, the
 
     Returns **RCW_ERR_TRUNCATED** when *len* is below 140 and
     **RCW_ERR_BAD_BINARY** when the preamble is missing or word 1 is not a
-    Load RCW command.
+    Load RCW command. The two words are **RCW_PBL_PREAMBLE** and
+    **RCW_PBL_CMD_LOAD_RCW** or **RCW_PBL_CMD_LOAD_RCW_NOCS**; the
+    terminator is **RCW_PBL_TERMINATOR_BYTES** long.
+
+**rcw_pbl_from_rcw**(*rcw*, *pbl*)
+:   The same for the 128-byte RCW alone, as the RCWSR registers hold it:
+    *pbl*->**rcw**, **pbi_length** and **sb_en** are set, the envelope
+    fields are 0 and **pbi** is NULL.
 
 **rcw_pbi_crc**(*pbi*, *len*)
 :   Return the CRC.
@@ -232,6 +264,38 @@ Stop, and each word on the way must be a command.
     not a PBI command, *chk*->**cmd**.**word** holding it, and
     **RCW_ERR_TRUNCATED** when the image holds fewer than **len** bytes
     after the RCW, so that the command at RCW[PBI_LENGTH] cannot be read.
+
+## PBL Image Verdict
+
+**rcw_pbl_parse**() and **rcw_pbl_check**() report; **rcw_pbl_verify**()
+judges, as the BootROM should likely do before it runs the PBI.
+
+**rcw_pbl_verify**(*buf*, *len*, *littleendian*, *visit*, *arg*, *rep*)
+:   Parse and check the image in *buf*, calling *visit* as
+    **rcw_pbl_check**() does, and fill *rep*: **envelope** is the result
+    of **rcw_pbl_parse**() and **pbl** its output; **word0** and
+    **word1** are the first two words of *buf* and **preamble_ok** and
+    **load_rcw_ok** say whether they are the preamble and a Load RCW
+    command; **has_checksum** and **checksum_ok** judge the Load RCW
+    checksum (no checksum passes); **pbi** is the result of
+    **rcw_pbl_check**() and **chk** its output; **terminated** says the
+    walk read a Stop or CRC and Stop whole, which **chk**.**cmd** cannot
+    tell since a decode cut short still names the command; **crc_ok**
+    says the check passed and either the terminator is a plain Stop or
+    the CRC matches; **ok** is **checksum_ok**, **pbi** == **RCW_OK** and
+    **crc_ok** together.
+
+    **image_end** is what to hand **rcw_decompile_buffer**() so that
+    whatever follows the image, flash padding for instance, stays out of
+    the source: when **ok**, the **RCW_PBL_PBI_OFFSET** + 4 *
+    RCW[PBI_LENGTH] bytes the Service Processor reads; when
+    **terminated**, through that Stop or CRC and Stop, although
+    RCW[PBI_LENGTH] disagrees with it or the buffer ends early; *len*
+    otherwise.
+
+    Returns **RCW_OK** when *rep*->**ok**, else the first failure: the
+    envelope's error, **RCW_ERR_CHECKSUM**, the PBI check's error,
+    **RCW_ERR_CRC**.
 
 ## Error Handling
 
@@ -352,6 +416,12 @@ then pasted between **.uboot** and **.end** in the source.
 :   The command RCW[PBI_LENGTH] points at is not a Stop or a CRC and Stop
     (**rcw_pbl_check()**).
 
+**RCW_ERR_CHECKSUM**
+:   The Load RCW checksum does not match (**rcw_pbl_verify()**).
+
+**RCW_ERR_CRC**
+:   The CRC and Stop value does not match (**rcw_pbl_verify()**).
+
 # EXAMPLES
 
 ## Compile an RCW file
@@ -435,37 +505,31 @@ if (err == RCW_OK) {
 
 static void show(const rcw_pbi_cmd_t *cmd, size_t off, void *arg)
 {
+    char line[RCW_PBI_SOURCE_MAX];
+
     (void)arg;
-    printf("%4zu: %s", off, rcw_pbi_op_name(cmd->op));
-    for (size_t i = 0; i < cmd->nargs; i++)
-        printf(" 0x%08x", cmd->args[i]);
-    printf("\n");
+    rcw_pbi_to_source(cmd, line, sizeof(line));
+    printf("%4zu: %s\n", RCW_PBL_PBI_OFFSET + off, line);
 }
 
 int check_pbl(const uint8_t *buf, size_t len)
 {
-    rcw_pbl_t pbl;
-    rcw_pbi_check_t chk;
-    rcw_error_t err;
+    rcw_pbl_report_t rep;
+    rcw_error_t verdict = rcw_pbl_verify(buf, len, 1, show, NULL, &rep);
 
-    err = rcw_pbl_parse(buf, len, 1, &pbl);
-    if (err != RCW_OK) {
-        printf("not a PBL image: %s\n", rcw_strerror(err));
-        return -1;
-    }
-    if (pbl.load_rcw_cmd == 0x80100000 &&
-        pbl.checksum != pbl.checksum_computed)
+    if (verdict == RCW_OK)
+        return 0;
+    if (rep.envelope != RCW_OK)
+        printf("not a PBL image: %s\n", rcw_strerror(rep.envelope));
+    else if (!rep.checksum_ok)
         printf("RCW checksum 0x%08x, computed 0x%08x\n",
-               pbl.checksum, pbl.checksum_computed);
-
-    err = rcw_pbl_check(&pbl, 1, show, NULL, &chk);
-    if (err != RCW_OK) {
-        printf("PBI byte %zu: %s\n", chk.end, rcw_strerror(err));
-        return -1;
-    }
-    if (chk.stop_op == RCW_PBI_CRC_STOP && chk.crc != chk.crc_computed)
-        printf("PBI CRC 0x%08x, computed 0x%08x\n", chk.crc, chk.crc_computed);
-    return 0;
+               rep.pbl.checksum, rep.pbl.checksum_computed);
+    else if (rep.pbi != RCW_OK)
+        printf("PBI byte %zu: %s\n", rep.chk.end, rcw_strerror(rep.pbi));
+    else
+        printf("PBI CRC 0x%08x, computed 0x%08x\n",
+               rep.chk.crc, rep.chk.crc_computed);
+    return -1;
 }
 ```
 

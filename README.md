@@ -38,6 +38,9 @@ Supported platforms: LS1028, LS1088, LS2088, and LX2160 families (PBI format 2).
 - No runtime dependency on an external C compiler: preprocessing is
   handled in-process by [mcpp](http://mcpp.sourceforge.net/)
 - Image checking API
+- The `.pbi` line of any decoded command (`rcw_pbi_to_source()`)
+- The command-line forms of the overrides and macros
+  (`rcw_ctx_set_bitfield_text()`, `rcw_ctx_add_define()` with `NAME=VALUE`)
 - The PBI flow control (`loadc`, `jump`, `jumpc` and labels),
   printed back with labels by the decompiler
 
@@ -85,8 +88,10 @@ This runs the cmocka unit test suites:
 | `test_density` | Density commands (0x02 / 0x42)     |
 | `test_secure`  | Secure boot commands (0x20 / 0x22) |
 | `test_decode`  | PBI command decoder                |
-| `test_pbl`     | PBL envelope reader, the CRC and Stop value and the PBI check |
+| `test_pbl`     | PBL envelope reader, the CRC and Stop value, the PBI check and the image verdict |
 | `test_preprocess` | Macros handed to mcpp |
+| `test_source`  | The `.pbi` line printed for a decoded command |
+| `test_context` | `NAME=VALUE` overrides and macros from the command line |
 
 ## Install
 
@@ -172,16 +177,15 @@ rcw_free(source);
 rcw_ctx_free(ctx);
 
 /*
- * Check an image the way the Service Processor does: a terminator at
- * PBI_LENGTH, every word a command, the CRC reported for comparison.
- * A visitor in place of the NULLs sees each command, see libqoriq-rcw(3).
+ * Judge an image the way the BootROM should do: the envelope, the
+ * Load RCW checksum, a terminator at PBI_LENGTH, every word a command,
+ * the CRC. A visitor in place of the NULLs sees each command and can
+ * print it with rcw_pbi_to_source(), see libqoriq-rcw(3).
  */
-rcw_pbl_t pbl;
-rcw_pbi_check_t chk;
-if (rcw_pbl_parse(binary, len, 1, &pbl) == RCW_OK &&
-    rcw_pbl_check(&pbl, 1, NULL, NULL, &chk) == RCW_OK &&
-    chk.stop_op == RCW_PBI_CRC_STOP && chk.crc != chk.crc_computed)
-    printf("PBI CRC 0x%08x, computed 0x%08x\n", chk.crc, chk.crc_computed);
+rcw_pbl_report_t rep;
+rcw_error_t verdict = rcw_pbl_verify(binary, len, 1, NULL, NULL, &rep);
+if (verdict != RCW_OK)
+    printf("the image does not boot: %s\n", rcw_strerror(verdict));
 ```
 
 Link with `-lqoriq-rcw`, or use pkg-config:
