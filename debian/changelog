@@ -1,3 +1,18 @@
+libqoriq-rcw (1.3.0-1) unstable; urgency=medium
+
+  * rcw_pbl_verify(): the verdict such as BootROM would likely do
+  * rcw_pbi_to_source(): add the .pbi line of a decoded command
+  * rcw_pbl_from_rcw(): RCW[PBI_LENGTH] and RCW[SB_EN] of a bare RCW, as
+    the RCWSR registers
+  * rcw_ctx_set_bitfield_text(): the -D NAME=VALUE override same as rcw.py
+    rcw_ctx_add_define() takes NAME=VALUE as a C compiler does.
+  * Exported envelope constants: RCW_PBL_PREAMBLE, RCW_PBL_CMD_LOAD_RCW,
+    RCW_PBL_CMD_LOAD_RCW_NOCS, RCW_PBL_TERMINATOR_BYTES.
+  * An invalid bitfield value is reported on stderr unconditionally, no
+    longer only with warnings enabled.
+
+ -- Vincent Jardin <vjardin@free.fr>  Sun, 25 Oct 2026 02:32:45 +0200
+
 libqoriq-rcw (1.2.0-1) unstable; urgency=medium
 
   * Image checking API: rcw_pbi_decode, rcw_pbi_op_name, rcw_pbl_parse,
