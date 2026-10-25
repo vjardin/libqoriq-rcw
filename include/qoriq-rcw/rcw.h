@@ -38,6 +38,7 @@ typedef enum {
   RCW_ERR_PBI_LENGTH,
   RCW_ERR_CHECKSUM,
   RCW_ERR_CRC,
+  RCW_ERR_PBI_OVERRUN,
 } rcw_error_t;
 
 /* Opaque context - all state lives here, no globals. */
@@ -257,10 +258,9 @@ typedef struct {
  *                       and every word executed before it is a command. The
  *                       CRC is reported, not judged: compare crc and
  *                       crc_computed. PBI_LENGTH 0 is a PBL without PBI.
- *   RCW_ERR_PBI_LENGTH  the command at PBI_LENGTH is not a terminator: a
- *                       command crosses it, the walk reaches it without a
- *                       terminator, or a Stop ends execution earlier and
- *                       something else sits at the end
+ *   RCW_ERR_PBI_OVERRUN the command at end runs beyond PBI_LENGTH
+ *   RCW_ERR_PBI_LENGTH  no terminator at PBI_LENGTH: the walk reaches it
+ *                       without a Stop (end is PBI_LENGTH)
  *   RCW_ERR_BAD_BINARY  the word at end is not a PBI command, cmd.word holds it
  *   RCW_ERR_TRUNCATED   pbl->pbi_avail is below 4 * PBI_LENGTH, so the command
  *                       at PBI_LENGTH cannot be read; the walk ran to end

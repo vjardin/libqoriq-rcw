@@ -69,6 +69,7 @@ pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *ar
   size_t off = 0;
   const rcw_pbi_cmd_t *last = NULL;
   rcw_pbi_cmd_t final;
+  rcw_error_t err = RCW_OK;
 
   memset(chk, 0, sizeof(*chk));
   *term_end = 0;
@@ -79,8 +80,7 @@ pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *ar
     return RCW_OK;
 
   while (off < avail) {
-    rcw_error_t err = rcw_pbi_decode(pbl->pbi + off, avail - off, littleendian, &chk->cmd);
-
+    err = rcw_pbi_decode(pbl->pbi + off, avail - off, littleendian, &chk->cmd);
     chk->end = off;
     if (err == RCW_ERR_BAD_BINARY)
       return err;
@@ -100,7 +100,7 @@ pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *ar
   if (avail < len)
     return RCW_ERR_TRUNCATED;
   if (!last)
-    return RCW_ERR_PBI_LENGTH;
+    return err == RCW_ERR_TRUNCATED ? RCW_ERR_PBI_OVERRUN : RCW_ERR_PBI_LENGTH;
 
   if (chk->end < len) {
     if (rcw_pbi_decode(pbl->pbi + len - PBL_TERMINATOR_BYTES, PBL_TERMINATOR_BYTES,

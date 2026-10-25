@@ -400,6 +400,8 @@ rcw_strerror(rcw_error_t err) {
       return "Load RCW checksum mismatch";
     case RCW_ERR_CRC:
       return "PBI CRC mismatch";
+    case RCW_ERR_PBI_OVERRUN:
+      return "PBI command runs past RCW[PBI_LENGTH]";
   }
 
   return "Unknown error";

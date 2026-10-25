@@ -257,13 +257,8 @@ Stop, and each word on the way must be a command.
     RCW[PBI_LENGTH] 0 is a PBL without PBI: nothing is visited and the
     check passes.
 
-    Returns **RCW_ERR_PBI_LENGTH** when the command at RCW[PBI_LENGTH] is
-    not a terminator: a command crosses it, the walk reaches it without a
-    Stop, or a Stop ends execution earlier and something else sits at the
-    end. Returns **RCW_ERR_BAD_BINARY** when the word at *chk*->**end** is
-    not a PBI command, *chk*->**cmd**.**word** holding it, and
-    **RCW_ERR_TRUNCATED** when the image holds fewer than **len** bytes
-    after the RCW, so that the command at RCW[PBI_LENGTH] cannot be read.
+    Returns **RCW_ERR_PBI_OVERRUN** when the command at *chk*->**end**
+    runs past RCW[PBI_LENGTH].
 
 ## PBL Image Verdict
 
@@ -413,8 +408,10 @@ then pasted between **.uboot** and **.end** in the source.
     fewer bytes than RCW[PBI_LENGTH] says.
 
 **RCW_ERR_PBI_LENGTH**
-:   The command RCW[PBI_LENGTH] points at is not a Stop or a CRC and Stop
-    (**rcw_pbl_check()**).
+:   No Stop or CRC and Stop at RCW[PBI_LENGTH] (**rcw_pbl_check()**).
+
+**RCW_ERR_PBI_OVERRUN**
+:   A PBI command runs past RCW[PBI_LENGTH] (**rcw_pbl_check()**).
 
 **RCW_ERR_CHECKSUM**
 :   The Load RCW checksum does not match (**rcw_pbl_verify()**).

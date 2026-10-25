@@ -304,7 +304,8 @@ static void test_check_pbi_length(void **state) {
 
   set_pbi_length(bin, 1);
   assert_int_equal(rcw_pbl_parse(bin, len, 1, &pbl), RCW_OK);
-  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_LENGTH);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_OVERRUN);
+  assert_string_not_equal(rcw_strerror(RCW_ERR_PBI_OVERRUN), "Unknown error");
   assert_string_not_equal(rcw_strerror(RCW_ERR_PBI_LENGTH), "Unknown error");
   assert_int_equal(chk.len, PBI_WORD_BYTES);
   assert_int_equal(chk.end, OFF_WRITE);
@@ -315,7 +316,7 @@ static void test_check_pbi_length(void **state) {
 
   set_pbi_length(bin, 5);
   assert_int_equal(rcw_pbl_parse(bin, len, 1, &pbl), RCW_OK);
-  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_LENGTH);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_OVERRUN);
   assert_int_equal(chk.end, OFF_BLOCKCOPY);
   assert_int_equal(chk.ncmd, 1);
   assert_int_equal(chk.cmd.op, RCW_PBI_BLOCKCOPY);
