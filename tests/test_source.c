@@ -2,9 +2,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2026 Free Mobile - Vincent Jardin
  *
- * Each source line is compiled, decoded by the PBI check's walk and
- * printed back; the print must be the line, in the decompiler's spelling
- * (every number as 0x%08x, numeric jump targets).
+ * Each source line is compiled, decoded one command after the other, the
+ * jumps not followed so that every line is handled.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -35,10 +34,7 @@ struct lines {
   char text[MAX_LINES][RCW_PBI_SOURCE_MAX];
 };
 
-static void collect(const rcw_pbi_cmd_t *cmd, size_t off, void *arg) {
-  struct lines *l = arg;
-
-  (void)off;
+static void collect(const rcw_pbi_cmd_t *cmd, struct lines *l) {
   assert_true(l->n < MAX_LINES);
   int n = rcw_pbi_to_source(cmd, l->text[l->n], sizeof(l->text[l->n]));
   assert_true(n > 0 && (size_t)n < sizeof(l->text[l->n]));
@@ -54,7 +50,8 @@ static void run(const char *pbi, int crc, struct lines *l) {
   uint8_t *bin = NULL;
   size_t len = 0;
   rcw_pbl_t pbl;
-  rcw_pbi_check_t chk;
+  rcw_pbi_cmd_t cmd;
+  size_t off = 0;
 
   assert_non_null(src);
   assert_non_null(c);
@@ -62,7 +59,12 @@ static void run(const char *pbi, int crc, struct lines *l) {
   assert_int_equal(rcw_compile_buffer(c, src, strlen(src), &bin, &len), RCW_OK);
   memset(l, 0, sizeof(*l));
   assert_int_equal(rcw_pbl_parse(bin, len, 1, &pbl), RCW_OK);
-  assert_int_equal(rcw_pbl_check(&pbl, 1, collect, l, &chk), RCW_OK);
+  while (off < PBI_WORD_BYTES * (size_t)pbl.pbi_length) {
+    assert_int_equal(rcw_pbi_decode(pbl.pbi + off, pbl.pbi_avail - off, 1, &cmd), RCW_OK);
+    collect(&cmd, l);
+    off += cmd.size;
+  }
+  assert_int_equal(off, PBI_WORD_BYTES * (size_t)pbl.pbi_length);
   free(bin);
   free(src);
   rcw_ctx_free(c);

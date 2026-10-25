@@ -238,7 +238,10 @@ Before executing the PBI, the Boot 0 Reset Handler checks it as a whole (RM
 Section 8.2.6): the command RCW[PBI_LENGTH] points at must be a Stop or a
 CRC and Stop, and a CRC and Stop must carry the CRC of every command before
 it. Execution then runs from the first command to the first Stop or CRC and
-Stop, and each word on the way must be a command.
+Stop, and each word on the way must be a command. A Jump moves execution
+forward by its offset from its own start. A Jump Conditional compares a
+value loaded by Load Condition at boot, so which path runs is not known
+from the image.
 
 **rcw_pbl_check**(*pbl*, *littleendian*, *visit*, *arg*, *chk*)
 :   Replay that check on the PBI of the image *pbl* describes, as returned
@@ -248,7 +251,8 @@ Stop, and each word on the way must be a command.
     in: **len** is 4 * RCW[PBI_LENGTH], the bytes the Service Processor
     reads; **end** is where execution stops, the end of the first Stop or
     CRC and Stop, which is **len** unless a development buffer follows it;
-    **ncmd** counts the commands executed; **stop_op** is the command at
+    **ncmd** counts the commands executed, the ones a Jump skips left
+    out; **stop_op** is the command at
     **len** - 8, **RCW_PBI_STOP** or **RCW_PBI_CRC_STOP** on success;
     **crc** is the value a CRC and Stop carries and **crc_computed** the
     CRC-32 of the **len** - 4 bytes before it, to compare, as a mismatch is
@@ -276,9 +280,11 @@ judges, as the BootROM should likely do before it runs the PBI.
     **rcw_pbl_check**() and **chk** its output; **terminated** says the
     walk read a Stop or CRC and Stop whole, which **chk**.**cmd** cannot
     tell since a decode cut short still names the command; **crc_ok**
-    says the check passed and either the terminator is a plain Stop or
-    the CRC matches; **ok** is **checksum_ok**, **pbi** == **RCW_OK** and
-    **crc_ok** together.
+    says the pre-execution check passed, **pbi** being **RCW_OK** or
+    **RCW_ERR_PBI_CONDITIONAL**, and either the terminator is a plain Stop
+    or the CRC matches; **ok** is **checksum_ok**, **pbi** == **RCW_OK** and
+    **crc_ok** together, so never for an image with a Jump Conditional: the
+    verdict stops at the path the image leaves to the hardware.
 
     **image_end** is what to hand **rcw_decompile_buffer**() so that
     whatever follows the image, flash padding for instance, stays out of
@@ -290,7 +296,8 @@ judges, as the BootROM should likely do before it runs the PBI.
 
     Returns **RCW_OK** when *rep*->**ok**, else the first failure: the
     envelope's error, **RCW_ERR_CHECKSUM**, the PBI check's error,
-    **RCW_ERR_CRC**.
+    **RCW_ERR_CRC**, and **RCW_ERR_PBI_CONDITIONAL** last, since it is a
+    limit of the verifier rather than a defect of the image.
 
 ## Error Handling
 
@@ -412,6 +419,19 @@ then pasted between **.uboot** and **.end** in the source.
 
 **RCW_ERR_PBI_OVERRUN**
 :   A PBI command runs past RCW[PBI_LENGTH] (**rcw_pbl_check()**).
+
+**RCW_ERR_PBI_JUMP**
+:   A PBI Jump has an offset that is not a multiple of 4 above 8, or lands
+    at or past RCW[PBI_LENGTH] (**rcw_pbl_check()**).
+
+**RCW_ERR_PBI_NO_CONDITION**
+:   A PBI Jump Conditional comes before any Load Condition
+    (**rcw_pbl_check()**).
+
+**RCW_ERR_PBI_CONDITIONAL**
+:   The PBI holds a Jump Conditional: the path the Service Processor takes
+    depends on a register read at boot, so the walk stopped there
+    (**rcw_pbl_check()**, **rcw_pbl_verify()**).
 
 **RCW_ERR_CHECKSUM**
 :   The Load RCW checksum does not match (**rcw_pbl_verify()**).

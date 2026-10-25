@@ -39,6 +39,9 @@ typedef enum {
   RCW_ERR_CHECKSUM,
   RCW_ERR_CRC,
   RCW_ERR_PBI_OVERRUN,
+  RCW_ERR_PBI_JUMP,
+  RCW_ERR_PBI_NO_CONDITION,
+  RCW_ERR_PBI_CONDITIONAL,
 } rcw_error_t;
 
 /* Opaque context - all state lives here, no globals. */
@@ -258,6 +261,14 @@ typedef struct {
  *                       and every word executed before it is a command. The
  *                       CRC is reported, not judged: compare crc and
  *                       crc_computed. PBI_LENGTH 0 is a PBL without PBI.
+ *   RCW_ERR_PBI_JUMP    the jump at end has an offset that is not a multiple
+ *                       of 4 above 8, or lands at or past PBI_LENGTH
+ *   RCW_ERR_PBI_NO_CONDITION
+ *                       the Jump Conditional at end comes before any Load
+ *                       Condition
+ *   RCW_ERR_PBI_CONDITIONAL
+ *                       the Jump Conditional at end depends on a register
+ *                       read at boot
  *   RCW_ERR_PBI_OVERRUN the command at end runs beyond PBI_LENGTH
  *   RCW_ERR_PBI_LENGTH  no terminator at PBI_LENGTH: the walk reaches it
  *                       without a Stop (end is PBI_LENGTH)

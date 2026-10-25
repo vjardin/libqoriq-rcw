@@ -61,15 +61,23 @@ rcw_pbi_crc(const uint8_t *pbi, size_t len) {
   return rcw_reverse_word(crc) ^ RCW_CRC32_INIT;
 }
 
+#define PBI_JUMP_MIN_OFFSET 8
+
+static bool
+terminator(rcw_pbi_op_t op) {
+  return op == RCW_PBI_STOP || op == RCW_PBI_CRC_STOP;
+}
+
 static rcw_error_t
 pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *arg,
          rcw_pbi_check_t *chk, size_t *term_end) {
   size_t len = PBI_WORD_BYTES * (size_t)pbl->pbi_length;
   size_t avail = (len < pbl->pbi_avail) ? len : pbl->pbi_avail;
   size_t off = 0;
-  const rcw_pbi_cmd_t *last = NULL;
-  rcw_pbi_cmd_t final;
+  bool condition = false, stopped = false, conditional = false;
   rcw_error_t err = RCW_OK;
+  const rcw_pbi_cmd_t *last;
+  rcw_pbi_cmd_t final;
 
   memset(chk, 0, sizeof(*chk));
   *term_end = 0;
@@ -89,23 +97,43 @@ pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *ar
     chk->ncmd++;
     if (visit)
       visit(&chk->cmd, off, arg);
-    off += chk->cmd.size;
-    chk->end = off;
-    if (chk->cmd.op == RCW_PBI_STOP || chk->cmd.op == RCW_PBI_CRC_STOP) {
-      last = &chk->cmd;
+
+    if (terminator(chk->cmd.op)) {
+      off += chk->cmd.size;
+      chk->end = off;
       *term_end = off;
+      stopped = true;
       break;
     }
+    if (chk->cmd.op == RCW_PBI_LOADCONDITION)
+      condition = true;
+    if (chk->cmd.op == RCW_PBI_JUMP || chk->cmd.op == RCW_PBI_JUMP_COND) {
+      uint32_t offset = chk->cmd.args[0];
+
+      if (offset % PBI_WORD_BYTES != 0 || offset <= PBI_JUMP_MIN_OFFSET ||
+          offset >= len - off)
+        return RCW_ERR_PBI_JUMP;
+      if (chk->cmd.op == RCW_PBI_JUMP_COND) {
+        if (!condition)
+          return RCW_ERR_PBI_NO_CONDITION;
+        conditional = true;
+        break;
+      }
+      off += offset;
+      continue;
+    }
+    off += chk->cmd.size;
+    chk->end = off;
   }
   if (avail < len)
     return RCW_ERR_TRUNCATED;
-  if (!last)
+  if (!stopped && !conditional)
     return err == RCW_ERR_TRUNCATED ? RCW_ERR_PBI_OVERRUN : RCW_ERR_PBI_LENGTH;
 
-  if (chk->end < len) {
+  last = &chk->cmd;
+  if (chk->end < len || conditional) {
     if (rcw_pbi_decode(pbl->pbi + len - PBL_TERMINATOR_BYTES, PBL_TERMINATOR_BYTES,
-                       littleendian, &final) != RCW_OK ||
-        (final.op != RCW_PBI_STOP && final.op != RCW_PBI_CRC_STOP))
+                       littleendian, &final) != RCW_OK || !terminator(final.op))
       return RCW_ERR_PBI_LENGTH;
     last = &final;
   }
@@ -115,7 +143,7 @@ pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *ar
     chk->crc_computed = rcw_pbi_crc(pbl->pbi, len - PBI_WORD_BYTES);
   }
 
-  return RCW_OK;
+  return conditional ? RCW_ERR_PBI_CONDITIONAL : RCW_OK;
 }
 
 rcw_error_t
@@ -131,6 +159,7 @@ rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian, rcw_pbi_visit_t
                rcw_pbl_report_t *rep) {
   size_t term_end = 0;
   size_t pbi_end;
+  bool checked;
 
   memset(rep, 0, sizeof(*rep));
   rep->image_end = len;
@@ -151,11 +180,12 @@ rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian, rcw_pbi_visit_t
 
   rep->pbi = pbl_walk(&rep->pbl, littleendian, visit, arg, &rep->chk, &term_end);
   rep->terminated = term_end > 0;
-  rep->crc_ok = rep->pbi == RCW_OK &&
+  checked = rep->pbi == RCW_OK || rep->pbi == RCW_ERR_PBI_CONDITIONAL;
+  rep->crc_ok = checked &&
                 (rep->chk.stop_op != RCW_PBI_CRC_STOP || rep->chk.crc == rep->chk.crc_computed);
   rep->ok = rep->checksum_ok && rep->pbi == RCW_OK && rep->crc_ok;
 
-  if (rep->pbi == RCW_OK)
+  if (checked)
     pbi_end = rep->chk.len;
   else if (rep->terminated)
     pbi_end = term_end;
@@ -166,10 +196,12 @@ rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian, rcw_pbi_visit_t
 
   if (!rep->checksum_ok)
     return RCW_ERR_CHECKSUM;
-  if (rep->pbi != RCW_OK)
+  if (!checked)
     return rep->pbi;
   if (!rep->crc_ok)
     return RCW_ERR_CRC;
+  if (rep->pbi != RCW_OK)
+    return rep->pbi;
 
   return RCW_OK;
 }

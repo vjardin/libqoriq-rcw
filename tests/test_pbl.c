@@ -660,6 +660,172 @@ static void test_verify_not_pbl(void **state) {
   free(bin);
 }
 
+#define CMD(cmd) (PBL_CMD_GENERAL | ((uint32_t)(cmd) << PBI_CMD_SHIFT))
+
+static uint8_t *image_of(const uint32_t *words, size_t n, size_t *len) {
+  size_t blen = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &blen);
+  uint8_t *img = malloc(RCW_PBL_PBI_OFFSET + PBI_WORD_BYTES * n);
+
+  assert_non_null(img);
+  memcpy(img, bin, RCW_PBL_PBI_OFFSET);
+  free(bin);
+  for (size_t i = 0; i < n; i++)
+    put_word(img, RCW_PBL_PBI_OFFSET + PBI_WORD_BYTES * i, words[i]);
+  set_pbi_length(img, (uint32_t)n);
+  fix_checksum(img);
+  *len = RCW_PBL_PBI_OFFSET + PBI_WORD_BYTES * n;
+  return img;
+}
+
+static void test_check_jump(void **state) {
+  (void)state;
+  uint32_t words[] = {
+    0x31e00620, 0x00000001,                              /* write        @0  */
+    CMD(PBI_GENCMD_JUMP), 24,                            /* jump 24      @8, lands at 32 */
+    PBL_CMD_BLOCKCOPY | 0x0f, 0x20009000, 0x1800d000, 0x1000, /* skipped @16 */
+    PBL_CMD_WAIT | 0x64,                                 /* wait         @32 */
+    PBL_CMD_STOP, 0,                                     /* stop         @36 */
+  };
+  size_t len = 0;
+  uint8_t *img = image_of(words, 11, &len);
+  rcw_pbl_t pbl;
+  rcw_pbi_check_t chk;
+  struct visit_log l = { 0 };
+
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, log_visit, &l, &chk), RCW_OK);
+  assert_int_equal(chk.ncmd, 4);
+  assert_int_equal(l.n, 4);
+  assert_int_equal(l.op[0], RCW_PBI_CCSR_WRITE);
+  assert_int_equal(l.op[1], RCW_PBI_JUMP);
+  assert_int_equal(l.off[1], 8);
+  assert_int_equal(l.op[2], RCW_PBI_WAIT);
+  assert_int_equal(l.off[2], 32);
+  assert_int_equal(l.op[3], RCW_PBI_STOP);
+  assert_int_equal(chk.end, 44);
+  assert_int_equal(chk.stop_op, RCW_PBI_STOP);
+
+  put_word(img, RCW_PBL_PBI_OFFSET + 12, 28);
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_OK);
+  assert_int_equal(chk.ncmd, 3);
+  assert_int_equal(chk.end, 44);
+
+  put_word(img, RCW_PBL_PBI_OFFSET + 12, 20);
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_BAD_BINARY);
+  assert_int_equal(chk.ncmd, 2);
+  assert_int_equal(chk.end, 28);
+  assert_int_equal(chk.cmd.op, RCW_PBI_UNKNOWN);
+  assert_int_equal(chk.cmd.word, 0x1000);
+  free(img);
+}
+
+static void test_check_jump_offset(void **state) {
+  (void)state;
+  uint32_t words[] = {
+    0x31e00620, 0x00000001,
+    CMD(PBI_GENCMD_JUMP), 24,
+    PBL_CMD_BLOCKCOPY | 0x0f, 0x20009000, 0x1800d000, 0x1000,
+    PBL_CMD_WAIT | 0x64,
+    PBL_CMD_STOP, 0,
+  };
+  static const uint32_t bad[] = { 0, 4, 8, 10, 22, 36, 40, 0x1000, 0xfffffffc };
+  size_t len = 0;
+  uint8_t *img = image_of(words, 11, &len);
+  rcw_pbl_t pbl;
+  rcw_pbi_check_t chk;
+
+  assert_string_not_equal(rcw_strerror(RCW_ERR_PBI_JUMP), "Unknown error");
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    put_word(img, RCW_PBL_PBI_OFFSET + 12, bad[i]);
+    assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+    assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_JUMP);
+    assert_int_equal(chk.ncmd, 2);
+    assert_int_equal(chk.end, 8);
+    assert_int_equal(chk.cmd.op, RCW_PBI_JUMP);
+    assert_int_equal(chk.cmd.args[0], bad[i]);
+    assert_int_equal(chk.stop_op, RCW_PBI_UNKNOWN);
+  }
+  free(img);
+}
+
+static void test_check_conditional(void **state) {
+  (void)state;
+  uint32_t words[] = {
+    CMD(PBI_GENCMD_LOADCONDITION), 0x01e60130, 0xff,    /* loadc  @0  */
+    CMD(PBI_GENCMD_JUMP_COND), 20, 0x1,                  /* jumpc  @12, lands at 32 */
+    0x31e00620, 0x00000001,                              /* write  @24 */
+    PBL_CMD_STOP, 0,                                     /* stop   @32 */
+  };
+  size_t len = 0;
+  uint8_t *img = image_of(words, 10, &len);
+  rcw_pbl_t pbl;
+  rcw_pbi_check_t chk;
+  rcw_pbl_report_t rep;
+  struct visit_log l = { 0 };
+
+  assert_string_not_equal(rcw_strerror(RCW_ERR_PBI_CONDITIONAL), "Unknown error");
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, log_visit, &l, &chk), RCW_ERR_PBI_CONDITIONAL);
+  assert_int_equal(chk.ncmd, 2);
+  assert_int_equal(l.n, 2);
+  assert_int_equal(l.op[1], RCW_PBI_JUMP_COND);
+  assert_int_equal(chk.end, 12);
+  assert_int_equal(chk.cmd.op, RCW_PBI_JUMP_COND);
+  assert_int_equal(chk.stop_op, RCW_PBI_STOP);
+
+  assert_int_equal(rcw_pbl_verify(img, len, 1, NULL, NULL, &rep), RCW_ERR_PBI_CONDITIONAL);
+  assert_false(rep.ok);
+  assert_true(rep.checksum_ok);
+  assert_true(rep.crc_ok);
+  assert_false(rep.terminated);
+  assert_int_equal(rep.pbi, RCW_ERR_PBI_CONDITIONAL);
+  assert_int_equal(rep.image_end, len);
+
+  put_word(img, RCW_PBL_PBI_OFFSET + 32, PBL_CMD_CRC_STOP);
+  put_word(img, RCW_PBL_PBI_OFFSET + 36, rcw_pbi_crc(img + RCW_PBL_PBI_OFFSET, 36));
+  assert_int_equal(rcw_pbl_verify(img, len, 1, NULL, NULL, &rep), RCW_ERR_PBI_CONDITIONAL);
+  assert_true(rep.crc_ok);
+  assert_int_equal(rep.chk.stop_op, RCW_PBI_CRC_STOP);
+  img[len - 1] ^= 0x80;
+  assert_int_equal(rcw_pbl_verify(img, len, 1, NULL, NULL, &rep), RCW_ERR_CRC);
+  assert_false(rep.crc_ok);
+  assert_int_equal(rep.pbi, RCW_ERR_PBI_CONDITIONAL);
+
+  put_word(img, RCW_PBL_PBI_OFFSET + 32, PBL_CMD_WAIT | 1);
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_LENGTH);
+  assert_int_equal(chk.end, 12);
+  free(img);
+}
+
+static void test_check_no_condition(void **state) {
+  (void)state;
+  uint32_t words[] = {
+    CMD(PBI_GENCMD_JUMP_COND), 20, 0x1,                  /* jumpc  @0, lands at 20 */
+    0x31e00620, 0x00000001,                              /* write  @12 */
+    PBL_CMD_STOP, 0,                                     /* stop   @20 */
+  };
+  size_t len = 0;
+  uint8_t *img = image_of(words, 7, &len);
+  rcw_pbl_t pbl;
+  rcw_pbi_check_t chk;
+
+  assert_string_not_equal(rcw_strerror(RCW_ERR_PBI_NO_CONDITION), "Unknown error");
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_NO_CONDITION);
+  assert_int_equal(chk.ncmd, 1);
+  assert_int_equal(chk.end, 0);
+  assert_int_equal(chk.cmd.op, RCW_PBI_JUMP_COND);
+
+  put_word(img, RCW_PBL_PBI_OFFSET + 4, 6);
+  assert_int_equal(rcw_pbl_parse(img, len, 1, &pbl), RCW_OK);
+  assert_int_equal(rcw_pbl_check(&pbl, 1, NULL, NULL, &chk), RCW_ERR_PBI_JUMP);
+  free(img);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_parse_stop),
@@ -676,6 +842,10 @@ int main(void) {
     cmocka_unit_test(test_check_development_buffer),
     cmocka_unit_test(test_check_unknown_word),
     cmocka_unit_test(test_check_truncated),
+    cmocka_unit_test(test_check_jump),
+    cmocka_unit_test(test_check_jump_offset),
+    cmocka_unit_test(test_check_conditional),
+    cmocka_unit_test(test_check_no_condition),
     cmocka_unit_test(test_from_rcw),
     cmocka_unit_test(test_verify_ok),
     cmocka_unit_test(test_verify_padding),

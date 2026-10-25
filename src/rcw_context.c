@@ -402,6 +402,12 @@ rcw_strerror(rcw_error_t err) {
       return "PBI CRC mismatch";
     case RCW_ERR_PBI_OVERRUN:
       return "PBI command runs past RCW[PBI_LENGTH]";
+    case RCW_ERR_PBI_JUMP:
+      return "PBI Jump offset not a multiple of 4 above 8, or beyond RCW[PBI_LENGTH]";
+    case RCW_ERR_PBI_NO_CONDITION:
+      return "PBI Jump Conditional before any Load Condition";
+    case RCW_ERR_PBI_CONDITIONAL:
+      return "PBI Jump Conditional: the path taken depends on hardware state";
   }
 
   return "Unknown error";
