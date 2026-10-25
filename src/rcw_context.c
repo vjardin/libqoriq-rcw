@@ -5,6 +5,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <ctype.h>
 #include <libgen.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,9 +54,25 @@ rcw_ctx_add_include_path(rcw_ctx_t *ctx, const char *path) {
   return RCW_OK;
 }
 
+/* [A-Za-z_][A-Za-z0-9_]*: what mcpp -D takes as a macro name */
+static size_t
+identifier_len(const char *s) {
+  size_t n = 0;
+
+  if (!s || !(isalpha((unsigned char)s[0]) || s[0] == '_'))
+    return 0;
+  while (isalnum((unsigned char)s[n]) || s[n] == '_')
+    n++;
+
+  return n;
+}
+
 rcw_error_t
 rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *value) {
-  if (!name || !*name)
+  size_t n = identifier_len(name);
+
+  /* the name alone, or "NAME=VALUE" when no value comes separately */
+  if (n == 0 || (name[n] != '\0' && (name[n] != '=' || value)))
     return RCW_ERR_PARSE;
   if (ctx->define_count >= RCW_MAX_DEFINES)
     return RCW_ERR_NOMEM;
@@ -100,6 +117,35 @@ rcw_ctx_set_bitfield(rcw_ctx_t *ctx, const char *name, uint64_t value) {
   ctx->override_count++;
 
   return RCW_OK;
+}
+
+rcw_error_t
+rcw_ctx_set_bitfield_text(rcw_ctx_t *ctx, const char *text) {
+  const char *eq = text ? strchr(text, '=') : NULL;
+  size_t n = eq ? (size_t)(eq - text) : 0;
+  char name[RCW_FIELD_NAME_MAX];
+  const char *end;
+  uint64_t value;
+
+  if (n == 0 || n >= sizeof(name)) {
+    rcw_set_error(ctx, "Expected NAME=VALUE: %s", text ? text : "(null)");
+    return RCW_ERR_PARSE;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!(isalnum((unsigned char)text[i]) || text[i] == '_')) {
+      rcw_set_error(ctx, "Bad bitfield name in %s", text);
+      return RCW_ERR_PARSE;
+    }
+  }
+  /* python like: int(value, 0), behind a regex that passes [0-9a-zA-Z]+ only */
+  if (eq[1] == '\0' || rcw_parse_literal(eq + 1, &end, &value) != RCW_OK || *end != '\0') {
+    rcw_set_error(ctx, "Invalid value for %.*s: %s", (int)n, text, eq + 1);
+    return RCW_ERR_PARSE;
+  }
+  memcpy(name, text, n);
+  name[n] = '\0';
+
+  return rcw_ctx_set_bitfield(ctx, name, value);
 }
 
 static void
