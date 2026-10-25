@@ -109,7 +109,7 @@ jobs:
           path: build/meson-dist/*.tar.xz
 
   package:
-    # Build libqoriq-rcw0 (runtime) and libqoriq-rcw-dev (headers/static/.pc)
+    # Build libqoriq-rcw1 (runtime) and libqoriq-rcw-dev (headers/static/.pc)
     # .deb packages for the supported Ubuntu LTS releases (24.04, 26.04) and
     # the two latest Debian stable releases (12 bookworm, 13 trixie), on
     # both amd64 and arm64. All builds run inside a distro container so the

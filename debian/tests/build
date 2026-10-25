@@ -1,0 +1,40 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright 2026 Free Mobile -- Vincent Jardin
+
+set -eu
+
+cd "${AUTOPKGTEST_TMP:-$(mktemp -d)}"
+
+cat > rcwtest.c <<'SRC'
+#include <qoriq-rcw/rcw.h>
+#include <stdio.h>
+#include <string.h>
+
+static const char src[] =
+  "%size=1024\n%pbiformat=2\n%classicbitnumbers=1\n%littleendian=1\n"
+  "SYS_PLL_RAT[6:2]\nPBI_LENGTH[287:276]\nSYS_PLL_RAT=14\n"
+  ".pbi\nwrite 0x01e00400,0x1800d000\n.end\n";
+
+int main(void) {
+  rcw_ctx_t *ctx = rcw_ctx_new();
+  uint8_t *bin = NULL;
+  size_t len = 0;
+  rcw_pbl_report_t rep;
+  rcw_error_t err = rcw_compile_buffer(ctx, src, strlen(src), &bin, &len);
+
+  if (err != RCW_OK) {
+    fprintf(stderr, "compile: %s\n", rcw_strerror(err));
+    return 1;
+  }
+  err = rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep);
+  printf("%zu bytes, verdict: %s\n", len, rcw_strerror(err));
+  rcw_free(bin);
+  rcw_ctx_free(ctx);
+  return err == RCW_OK && rep.ok && rep.chk.stop_op == RCW_PBI_CRC_STOP ? 0 : 1;
+}
+SRC
+
+# shellcheck disable=SC2046
+gcc -Wall -Werror -o rcwtest rcwtest.c $(pkgconf --cflags --libs libqoriq-rcw)
+./rcwtest

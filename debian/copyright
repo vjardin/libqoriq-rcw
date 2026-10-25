@@ -1,5 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: libqoriq-rcw
+Upstream-Contact: Vincent Jardin <vjardin@free.fr>
 Source: https://github.com/vjardin/libqoriq-rcw
 
 Files: *

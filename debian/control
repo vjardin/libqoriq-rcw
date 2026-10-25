@@ -1,20 +1,19 @@
 Source: libqoriq-rcw
 Section: libs
-Priority: optional
 Maintainer: Vincent Jardin <vjardin@free.fr>
 Build-Depends:
  debhelper-compat (= 13),
  meson,
  ninja-build,
- pkg-config,
+ pkgconf,
  libmcpp-dev,
- libcmocka-dev,
+ libcmocka-dev <!nocheck>,
  pandoc
-Standards-Version: 4.6.2
+Standards-Version: 4.7.3
 Homepage: https://github.com/vjardin/libqoriq-rcw
 Rules-Requires-Root: no
 
-Package: libqoriq-rcw0
+Package: libqoriq-rcw1
 Architecture: any
 Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
@@ -32,7 +31,7 @@ Section: libdevel
 Architecture: any
 Multi-Arch: same
 Depends:
- libqoriq-rcw0 (= ${binary:Version}),
+ libqoriq-rcw1 (= ${binary:Version}),
  libmcpp-dev,
  ${misc:Depends}
 Description: QorIQ Reset Configuration Word compiler library (development files)
