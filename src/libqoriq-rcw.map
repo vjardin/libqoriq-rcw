@@ -1,0 +1,35 @@
+/*
+ * SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2026 Free Mobile - Vincent Jardin
+ *
+ * The ABI of libqoriq-rcw.so.1: the functions of include/qoriq-rcw/rcw.h.
+ */
+{
+  global:
+    rcw_compile_buffer;
+    rcw_compile_file;
+    rcw_ctx_add_define;
+    rcw_ctx_add_include_path;
+    rcw_ctx_free;
+    rcw_ctx_last_error_detail;
+    rcw_ctx_new;
+    rcw_ctx_set_bitfield;
+    rcw_ctx_set_bitfield_text;
+    rcw_ctx_set_pbl;
+    rcw_ctx_set_warnings;
+    rcw_decompile_buffer;
+    rcw_decompile_file;
+    rcw_free;
+    rcw_pbi_crc;
+    rcw_pbi_decode;
+    rcw_pbi_op_name;
+    rcw_pbi_to_source;
+    rcw_pbl_check;
+    rcw_pbl_from_rcw;
+    rcw_pbl_parse;
+    rcw_pbl_verify;
+    rcw_preprocess_file;
+    rcw_strerror;
+  local:
+    *;
+};

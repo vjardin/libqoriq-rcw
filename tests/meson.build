@@ -18,9 +18,18 @@ test_sources = {
   'test_context'   : files('test_context.c'),
 }
 
+# The suites call internal functions, which the shared library does not export.
+libqoriq_rcw_internal = static_library('qoriq-rcw-internal', lib_sources,
+  include_directories : [inc, src_inc],
+  dependencies : [mcpp_dep])
+
 foreach name, src : test_sources
   exe = executable(name, src,
-    dependencies : [libqoriq_rcw_dep, cmocka_dep],
-    include_directories : src_inc)
+    link_with : libqoriq_rcw_internal,
+    dependencies : [mcpp_dep, cmocka_dep],
+    include_directories : [inc, src_inc])
   test(name, exe)
 endforeach
+
+test('check_exports', find_program('check_exports.sh'),
+  args : [meson.project_source_root() / 'include' / 'qoriq-rcw' / 'rcw.h', mapfile])

@@ -92,6 +92,7 @@ This runs the cmocka unit test suites:
 | `test_preprocess` | Macros handed to mcpp |
 | `test_source`  | The `.pbi` line printed for a decoded command |
 | `test_context` | `NAME=VALUE` overrides and macros from the command line |
+| `check_exports` | The version script lists exactly the functions of `rcw.h` |
 
 ## Install
 

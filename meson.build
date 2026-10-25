@@ -33,9 +33,17 @@ lib_sources = files(
   'src/rcw_preprocess.c',
 )
 
+mapfile = meson.current_source_dir() / 'src' / 'libqoriq-rcw.map'
+version_script = '-Wl,--version-script=' + mapfile
+if not cc.has_link_argument(version_script)
+  version_script = []
+endif
+
 libqoriq_rcw = library('qoriq-rcw', lib_sources,
   include_directories : [inc, src_inc],
   dependencies : [mcpp_dep],
+  link_args : version_script,
+  link_depends : mapfile,
   install : true,
   version : meson.project_version())
 
