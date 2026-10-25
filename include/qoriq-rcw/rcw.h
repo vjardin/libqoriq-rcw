@@ -36,6 +36,8 @@ typedef enum {
   RCW_ERR_UNSUPPORTED,
   RCW_ERR_TRUNCATED,
   RCW_ERR_PBI_LENGTH,
+  RCW_ERR_CHECKSUM,
+  RCW_ERR_CRC,
 } rcw_error_t;
 
 /* Opaque context - all state lives here, no globals. */
@@ -52,6 +54,7 @@ void rcw_ctx_free(rcw_ctx_t *ctx);
  */
 rcw_error_t rcw_ctx_add_include_path(rcw_ctx_t *ctx, const char *path);
 
+/* -Dname=value for mcpp; a NULL value takes "NAME" or "NAME=VALUE" */
 rcw_error_t rcw_ctx_add_define(rcw_ctx_t *ctx, const char *name, const char *value);
 rcw_error_t rcw_ctx_set_pbl(rcw_ctx_t *ctx, int enable);
 rcw_error_t rcw_ctx_set_warnings(rcw_ctx_t *ctx, int enable);
@@ -59,6 +62,9 @@ rcw_error_t rcw_ctx_set_warnings(rcw_ctx_t *ctx, int enable);
 /* Override a bitfield value (equivalent to rcw.py -D FIELD=VALUE).
  * Can be called multiple times. Overrides apply after source parsing. */
 rcw_error_t rcw_ctx_set_bitfield(rcw_ctx_t *ctx, const char *name, uint64_t value);
+
+/* The same from "NAME=VALUE", as rcw.py -D takes it */
+rcw_error_t rcw_ctx_set_bitfield_text(rcw_ctx_t *ctx, const char *text);
 
 /*
  * Forward compilation: .rcw -> .bin
@@ -174,6 +180,10 @@ rcw_error_t rcw_pbi_decode(const uint8_t *buf, size_t len, int littleendian, rcw
 /* The .rcw mnemonic of op, "unknown" for RCW_PBI_UNKNOWN. */
 const char *rcw_pbi_op_name(rcw_pbi_op_t op);
 
+/* The .pbi line of cmd, no newline, snprintf() semantics */
+#define RCW_PBI_SOURCE_MAX 1536 /* an awrite.b10 and its 128 words */
+int rcw_pbi_to_source(const rcw_pbi_cmd_t *cmd, char *buf, size_t size);
+
 /*
  * PBL image envelope
  *
@@ -195,6 +205,11 @@ const char *rcw_pbi_op_name(rcw_pbi_op_t op);
 #define RCW_PBL_CHECKSUM_OFFSET (RCW_PBL_RCW_OFFSET + RCW_PBL_RCW_BYTES)  /* 136 */
 #define RCW_PBL_PBI_OFFSET      (RCW_PBL_CHECKSUM_OFFSET + 4)             /* 140 */
 
+#define RCW_PBL_PREAMBLE          0xAA55AA55u
+#define RCW_PBL_CMD_LOAD_RCW      0x80100000u /* Load RCW with checksum */
+#define RCW_PBL_CMD_LOAD_RCW_NOCS 0x80110000u /* Load RCW without checksum */
+#define RCW_PBL_TERMINATOR_BYTES  8           /* Stop or CRC and Stop, and its CRC or zero word */
+
 typedef struct {
   uint32_t load_rcw_cmd;       /* word 1: 0x80100000, or 0x80110000 without checksum */
   const uint8_t *rcw;          /* the 128 RCW bytes, inside buf */
@@ -213,6 +228,9 @@ typedef struct {
  *   RCW_ERR_BAD_BINARY no preamble, or word 1 is not a Load RCW command
  */
 rcw_error_t rcw_pbl_parse(const uint8_t *buf, size_t len, int littleendian, rcw_pbl_t *pbl);
+
+/* From the RCW alone (an RCWSR snapshot): rcw, pbi_length and sb_en */
+void rcw_pbl_from_rcw(const uint8_t rcw[RCW_PBL_RCW_BYTES], rcw_pbl_t *pbl);
 
 uint32_t rcw_pbi_crc(const uint8_t *pbi, size_t len);
 
@@ -248,6 +266,26 @@ typedef struct {
  *                       at PBI_LENGTH cannot be read; the walk ran to end
  */
 rcw_error_t rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *arg, rcw_pbi_check_t *chk);
+
+/* The verdict of rcw_pbl_verify() */
+typedef struct {
+  rcw_error_t     envelope;      /* rcw_pbl_parse() */
+  uint32_t        word0, word1;
+  int             preamble_ok;
+  int             load_rcw_ok;
+  rcw_pbl_t       pbl;           /* when envelope is RCW_OK */
+  int             has_checksum;
+  int             checksum_ok;
+  rcw_error_t     pbi;           /* rcw_pbl_check() */
+  rcw_pbi_check_t chk;           /* when envelope is RCW_OK */
+  int             terminated;    /* a Stop or CRC and Stop was read whole */
+  int             crc_ok;
+  size_t          image_end;     /* bytes of the image in buf */
+  int             ok;
+} rcw_pbl_report_t;
+
+/* RCW_OK when rep->ok, else the first failure; see libqoriq-rcw(3) */
+rcw_error_t rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian, rcw_pbi_visit_t visit, void *arg, rcw_pbl_report_t *rep);
 
 /*
  * Error information

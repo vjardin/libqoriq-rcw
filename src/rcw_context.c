@@ -350,6 +350,10 @@ rcw_strerror(rcw_error_t err) {
       return "Command runs past the end of the data";
     case RCW_ERR_PBI_LENGTH:
       return "No Stop or CRC and Stop command at RCW[PBI_LENGTH]";
+    case RCW_ERR_CHECKSUM:
+      return "Load RCW checksum mismatch";
+    case RCW_ERR_CRC:
+      return "PBI CRC mismatch";
   }
 
   return "Unknown error";
