@@ -1,3 +1,14 @@
+libqoriq-rcw (1.4.0-1) unstable; urgency=medium
+
+  * rcw_pbl_check() follows the jumps
+  * New error codes
+  * The shared library exports the functions of rcw.h only
+  * Debian packaging: the runtime package is libqoriq-rcw1, after the
+    SONAME, with a symbols file; 3.0 (quilt) source format, watch file,
+    autopkgtest, tests during the build with a nocheck profile.
+
+ -- Vincent Jardin <vjardin@free.fr>  Sun, 25 Oct 2026 14:59:28 +0100
+
 libqoriq-rcw (1.3.0-1) unstable; urgency=medium
 
   * rcw_pbl_verify(): the verdict such as BootROM would likely do

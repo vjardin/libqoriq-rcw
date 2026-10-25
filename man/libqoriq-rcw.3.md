@@ -2,7 +2,7 @@
 title: LIBQORIQ-RCW
 section: 3
 header: Library Functions
-footer: libqoriq-rcw 1.3.0
+footer: libqoriq-rcw 1.4.0
 date: 2026-10-25
 ---
 
