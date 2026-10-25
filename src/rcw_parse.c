@@ -533,8 +533,7 @@ rcw_parse(rcw_ctx_t *ctx, const char *source, size_t len) {
       uint64_t v;
       if (parse_field_value(valstr, &v) != RCW_OK) {
         rcw_set_error(ctx, "Invalid value for %s: %s", name, valstr);
-        if (ctx->warnings)
-          fprintf(stderr, "%s\n", ctx->error_detail);
+        fprintf(stderr, "Error: %s\n", ctx->error_detail);
         free(line);
         p = eol + 1;
         continue;
