@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2026 Free Mobile - Vincent Jardin
  *
- * PBL image envelope
+ * PBL image envelope, PBI check and image verdict
  */
 
 #include <string.h>
@@ -12,6 +12,14 @@
 #define PBL_RCW_PBI_LENGTH_BEGIN 287
 #define PBL_RCW_PBI_LENGTH_END   276
 #define PBL_RCW_SB_EN            266
+
+static void
+rcw_fields(const uint8_t *rcw, rcw_pbl_t *pbl) {
+  pbl->rcw = rcw;
+  pbl->pbi_length = (uint32_t)rcw_bits_extract(rcw, PBL_RCW_PBI_LENGTH_BEGIN,
+                                               PBL_RCW_PBI_LENGTH_END, true);
+  pbl->sb_en = rcw_bits_extract(rcw, PBL_RCW_SB_EN, PBL_RCW_SB_EN, true) != 0;
+}
 
 rcw_error_t
 rcw_pbl_parse(const uint8_t *buf, size_t len, int littleendian, rcw_pbl_t *pbl) {
@@ -28,19 +36,22 @@ rcw_pbl_parse(const uint8_t *buf, size_t len, int littleendian, rcw_pbl_t *pbl) 
     return RCW_ERR_BAD_BINARY;
 
   pbl->load_rcw_cmd = cmd.word;
-  pbl->rcw = buf + RCW_PBL_RCW_OFFSET;
   pbl->checksum = cmd.args[PBL_RCW_WORDS];
   pbl->checksum_computed = PBL_PREAMBLE + cmd.word;
   for (size_t i = 0; i < PBL_RCW_WORDS; i++)
     pbl->checksum_computed += cmd.args[i];
 
-  pbl->pbi_length = (uint32_t)rcw_bits_extract(pbl->rcw, PBL_RCW_PBI_LENGTH_BEGIN,
-                                               PBL_RCW_PBI_LENGTH_END, true);
-  pbl->sb_en = rcw_bits_extract(pbl->rcw, PBL_RCW_SB_EN, PBL_RCW_SB_EN, true) != 0;
+  rcw_fields(buf + RCW_PBL_RCW_OFFSET, pbl);
   pbl->pbi = buf + RCW_PBL_PBI_OFFSET;
   pbl->pbi_avail = len - RCW_PBL_PBI_OFFSET;
 
   return RCW_OK;
+}
+
+void
+rcw_pbl_from_rcw(const uint8_t rcw[RCW_SIZE_BYTES], rcw_pbl_t *pbl) {
+  memset(pbl, 0, sizeof(*pbl));
+  rcw_fields(rcw, pbl);
 }
 
 uint32_t
@@ -50,9 +61,9 @@ rcw_pbi_crc(const uint8_t *pbi, size_t len) {
   return rcw_reverse_word(crc) ^ RCW_CRC32_INIT;
 }
 
-rcw_error_t
-rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *arg,
-              rcw_pbi_check_t *chk) {
+static rcw_error_t
+pbl_walk(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *arg,
+         rcw_pbi_check_t *chk, size_t *term_end) {
   size_t len = PBI_WORD_BYTES * (size_t)pbl->pbi_length;
   size_t avail = (len < pbl->pbi_avail) ? len : pbl->pbi_avail;
   size_t off = 0;
@@ -60,6 +71,7 @@ rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, voi
   rcw_pbi_cmd_t final;
 
   memset(chk, 0, sizeof(*chk));
+  *term_end = 0;
   chk->len = len;
   chk->stop_op = RCW_PBI_UNKNOWN;
   chk->cmd.op = RCW_PBI_UNKNOWN;
@@ -81,6 +93,7 @@ rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, voi
     chk->end = off;
     if (chk->cmd.op == RCW_PBI_STOP || chk->cmd.op == RCW_PBI_CRC_STOP) {
       last = &chk->cmd;
+      *term_end = off;
       break;
     }
   }
@@ -101,6 +114,62 @@ rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, voi
     chk->crc = last->args[0];
     chk->crc_computed = rcw_pbi_crc(pbl->pbi, len - PBI_WORD_BYTES);
   }
+
+  return RCW_OK;
+}
+
+rcw_error_t
+rcw_pbl_check(const rcw_pbl_t *pbl, int littleendian, rcw_pbi_visit_t visit, void *arg,
+              rcw_pbi_check_t *chk) {
+  size_t term_end;
+
+  return pbl_walk(pbl, littleendian, visit, arg, chk, &term_end);
+}
+
+rcw_error_t
+rcw_pbl_verify(const uint8_t *buf, size_t len, int littleendian, rcw_pbi_visit_t visit, void *arg,
+               rcw_pbl_report_t *rep) {
+  size_t term_end = 0;
+  size_t pbi_end;
+
+  memset(rep, 0, sizeof(*rep));
+  rep->image_end = len;
+  if (len >= 2 * PBI_WORD_BYTES) {
+    rep->word0 = rcw_unpack32(buf, littleendian);
+    rep->word1 = rcw_unpack32(buf + PBI_WORD_BYTES, littleendian);
+    rep->preamble_ok = rep->word0 == PBL_PREAMBLE;
+    rep->load_rcw_ok = rep->word1 == PBL_CMD_LOAD_RCW || rep->word1 == PBL_CMD_LOAD_RCW_NOCS;
+  }
+
+  rep->envelope = rcw_pbl_parse(buf, len, littleendian, &rep->pbl);
+  rep->pbi = rep->envelope;
+  if (rep->envelope != RCW_OK)
+    return rep->envelope;
+
+  rep->has_checksum = rep->pbl.load_rcw_cmd == PBL_CMD_LOAD_RCW;
+  rep->checksum_ok = !rep->has_checksum || rep->pbl.checksum == rep->pbl.checksum_computed;
+
+  rep->pbi = pbl_walk(&rep->pbl, littleendian, visit, arg, &rep->chk, &term_end);
+  rep->terminated = term_end > 0;
+  rep->crc_ok = rep->pbi == RCW_OK &&
+                (rep->chk.stop_op != RCW_PBI_CRC_STOP || rep->chk.crc == rep->chk.crc_computed);
+  rep->ok = rep->checksum_ok && rep->pbi == RCW_OK && rep->crc_ok;
+
+  if (rep->pbi == RCW_OK)
+    pbi_end = rep->chk.len;
+  else if (rep->terminated)
+    pbi_end = term_end;
+  else
+    pbi_end = rep->pbl.pbi_avail;
+  if (RCW_PBL_PBI_OFFSET + pbi_end < len)
+    rep->image_end = RCW_PBL_PBI_OFFSET + pbi_end;
+
+  if (!rep->checksum_ok)
+    return RCW_ERR_CHECKSUM;
+  if (rep->pbi != RCW_OK)
+    return rep->pbi;
+  if (!rep->crc_ok)
+    return RCW_ERR_CRC;
 
   return RCW_OK;
 }

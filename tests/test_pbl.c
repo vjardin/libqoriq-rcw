@@ -73,6 +73,15 @@ static void set_pbi_length(uint8_t *bin, uint32_t words) {
   put_word(bin, RCW_WORD8_AT, (word_at(bin, RCW_WORD8_AT) & ~PBI_LENGTH_MASK) | (words << PBI_LENGTH_SHIFT));
 }
 
+/* The Load RCW checksum again, after a patch of the RCW. */
+static void fix_checksum(uint8_t *bin) {
+  uint32_t sum = 0;
+
+  for (size_t off = 0; off < RCW_PBL_CHECKSUM_OFFSET; off += PBI_WORD_BYTES)
+    sum += word_at(bin, off);
+  put_word(bin, RCW_PBL_CHECKSUM_OFFSET, sum);
+}
+
 static rcw_pbi_check_t parse_check_ok(const uint8_t *bin, size_t len, rcw_pbl_t *pbl) {
   rcw_pbi_check_t chk;
 
@@ -427,6 +436,229 @@ static void test_check_truncated(void **state) {
   free(bin);
 }
 
+/* rcw_pbl_from_rcw(): the RCW alone, as the RCWSR registers hold it. */
+static void test_from_rcw(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" "SB_EN=1\n" PBI, &len);
+  rcw_pbl_t pbl;
+
+  rcw_pbl_from_rcw(bin + RCW_PBL_RCW_OFFSET, &pbl);
+  assert_ptr_equal(pbl.rcw, bin + RCW_PBL_RCW_OFFSET);
+  assert_int_equal(pbl.pbi_length, PBI_WORDS);
+  assert_int_equal(pbl.sb_en, 1);
+  assert_int_equal(pbl.load_rcw_cmd, 0);
+  assert_int_equal(pbl.checksum, 0);
+  assert_int_equal(pbl.checksum_computed, 0);
+  assert_null(pbl.pbi);
+  assert_int_equal(pbl.pbi_avail, 0);
+  free(bin);
+}
+
+/* rcw_pbl_verify(): the three terminators and Load RCW forms that boot. */
+static void test_verify_ok(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  rcw_pbl_report_t rep;
+  struct visit_log l = { 0 };
+
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, log_visit, &l, &rep), RCW_OK);
+  assert_true(rep.ok);
+  assert_int_equal(rep.envelope, RCW_OK);
+  assert_int_equal(rep.word0, PBL_PREAMBLE);
+  assert_int_equal(rep.word1, PBL_CMD_LOAD_RCW);
+  assert_true(rep.preamble_ok);
+  assert_true(rep.load_rcw_ok);
+  assert_true(rep.has_checksum);
+  assert_true(rep.checksum_ok);
+  assert_int_equal(rep.pbi, RCW_OK);
+  assert_int_equal(rep.chk.ncmd, 4);
+  assert_int_equal(rep.chk.stop_op, RCW_PBI_STOP);
+  assert_true(rep.terminated);
+  assert_true(rep.crc_ok);
+  assert_int_equal(rep.image_end, len);
+  assert_int_equal(l.n, 4);
+  assert_int_equal(l.op[3], RCW_PBI_STOP);
+  free(bin);
+
+  bin = compile_ok(HDR PBI, &len);
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_OK);
+  assert_true(rep.ok);
+  assert_int_equal(rep.chk.stop_op, RCW_PBI_CRC_STOP);
+  assert_int_equal(rep.chk.crc, rep.chk.crc_computed);
+  assert_true(rep.crc_ok);
+  free(bin);
+
+  bin = compile_ok(HDR "%nocrc=1\n" "%loadwochecksum=1\n" PBI, &len);
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_OK);
+  assert_true(rep.ok);
+  assert_int_equal(rep.word1, PBL_CMD_LOAD_RCW_NOCS);
+  assert_true(rep.load_rcw_ok);
+  assert_false(rep.has_checksum);
+  assert_true(rep.checksum_ok);
+  free(bin);
+}
+
+/* image_end stops at the terminator value: what follows is flash padding. */
+static void test_verify_padding(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  uint8_t *img = malloc(len + 64);
+  rcw_pbl_report_t rep;
+
+  assert_non_null(img);
+  memcpy(img, bin, len);
+  memset(img + len, 0xFF, 64);
+  free(bin);
+  assert_int_equal(rcw_pbl_verify(img, len + 64, 1, NULL, NULL, &rep), RCW_OK);
+  assert_true(rep.ok);
+  assert_int_equal(rep.image_end, len);
+
+  /* RCW[PBI_LENGTH] 0: the envelope alone. */
+  set_pbi_length(img, 0);
+  fix_checksum(img);
+  assert_int_equal(rcw_pbl_verify(img, len + 64, 1, NULL, NULL, &rep), RCW_OK);
+  assert_true(rep.ok);
+  assert_false(rep.terminated);
+  assert_int_equal(rep.chk.len, 0);
+  assert_int_equal(rep.image_end, RCW_PBL_PBI_OFFSET);
+  free(img);
+}
+
+static void test_verify_checksum(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  rcw_pbl_report_t rep;
+
+  bin[RCW_PBL_RCW_OFFSET] ^= 0x01;
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_CHECKSUM);
+  assert_string_not_equal(rcw_strerror(RCW_ERR_CHECKSUM), "Unknown error");
+  assert_false(rep.ok);
+  assert_true(rep.has_checksum);
+  assert_false(rep.checksum_ok);
+  assert_int_equal(rep.pbi, RCW_OK);
+  assert_true(rep.crc_ok);
+  assert_int_equal(rep.image_end, len);
+  free(bin);
+}
+
+static void test_verify_crc(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR PBI, &len);
+  rcw_pbl_report_t rep;
+
+  bin[RCW_PBL_PBI_OFFSET + OFF_WRITE + PBI_WORD_BYTES] ^= 0x01;
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_CRC);
+  assert_string_not_equal(rcw_strerror(RCW_ERR_CRC), "Unknown error");
+  assert_false(rep.ok);
+  assert_true(rep.checksum_ok);
+  assert_int_equal(rep.pbi, RCW_OK);
+  assert_int_equal(rep.chk.stop_op, RCW_PBI_CRC_STOP);
+  assert_false(rep.crc_ok);
+  assert_true(rep.terminated);
+  assert_int_equal(rep.image_end, len);
+  free(bin);
+}
+
+static void test_verify_pbi_length(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  uint8_t *img = malloc(len + PBL_TERMINATOR_BYTES);
+  rcw_pbl_report_t rep;
+
+  /* Points into the wait: no terminator read, the whole buffer stays. */
+  set_pbi_length(bin, PBI_WORDS - 2);
+  fix_checksum(bin);
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_PBI_LENGTH);
+  assert_false(rep.ok);
+  assert_true(rep.checksum_ok);
+  assert_int_equal(rep.pbi, RCW_ERR_PBI_LENGTH);
+  assert_int_equal(rep.chk.ncmd, 3);
+  assert_int_equal(rep.chk.cmd.op, RCW_PBI_WAIT);
+  assert_false(rep.terminated);
+  assert_int_equal(rep.image_end, len);
+
+  /* Points past the Stop, at two words of padding: the image ends at the Stop. */
+  assert_non_null(img);
+  memcpy(img, bin, len);
+  memset(img + len, 0xFF, PBL_TERMINATOR_BYTES);
+  set_pbi_length(img, PBI_WORDS + PBL_TERMINATOR_WORDS);
+  fix_checksum(img);
+  assert_int_equal(rcw_pbl_verify(img, len + PBL_TERMINATOR_BYTES, 1, NULL, NULL, &rep), RCW_ERR_PBI_LENGTH);
+  assert_int_equal(rep.chk.ncmd, 4);
+  assert_int_equal(rep.chk.cmd.op, RCW_PBI_STOP);
+  assert_true(rep.terminated);
+  assert_int_equal(rep.image_end, len);
+  free(img);
+  free(bin);
+}
+
+static void test_verify_truncated(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  rcw_pbl_report_t rep;
+
+  /* Cut inside the Stop: the decode names it, the walk did not read it. */
+  assert_int_equal(rcw_pbl_verify(bin, len - 4, 1, NULL, NULL, &rep), RCW_ERR_TRUNCATED);
+  assert_false(rep.ok);
+  assert_int_equal(rep.pbi, RCW_ERR_TRUNCATED);
+  assert_int_equal(rep.chk.ncmd, 3);
+  assert_int_equal(rep.chk.cmd.op, RCW_PBI_STOP);
+  assert_false(rep.terminated);
+  assert_int_equal(rep.image_end, len - 4);
+
+  /* A Stop read whole before a RCW[PBI_LENGTH] the buffer cannot hold. */
+  set_pbi_length(bin, PBI_WORDS + 2);
+  fix_checksum(bin);
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_TRUNCATED);
+  assert_int_equal(rep.chk.ncmd, 4);
+  assert_true(rep.terminated);
+  assert_int_equal(rep.image_end, len);
+  free(bin);
+}
+
+static void test_verify_not_pbl(void **state) {
+  (void)state;
+  size_t len = 0;
+  uint8_t *bin = compile_ok(HDR "%nocrc=1\n" PBI, &len);
+  rcw_pbl_report_t rep;
+
+  assert_int_equal(rcw_pbl_verify(bin, RCW_PBL_PBI_OFFSET - 1, 1, NULL, NULL, &rep), RCW_ERR_TRUNCATED);
+  assert_int_equal(rep.envelope, RCW_ERR_TRUNCATED);
+  assert_int_equal(rep.pbi, RCW_ERR_TRUNCATED);
+  assert_true(rep.preamble_ok);
+  assert_true(rep.load_rcw_ok);
+  assert_false(rep.ok);
+  assert_int_equal(rep.image_end, RCW_PBL_PBI_OFFSET - 1);
+
+  assert_int_equal(rcw_pbl_verify(bin, 4, 1, NULL, NULL, &rep), RCW_ERR_TRUNCATED);
+  assert_int_equal(rep.word0, 0);
+  assert_false(rep.preamble_ok);
+
+  bin[0] ^= 0x01;
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_BAD_BINARY);
+  assert_int_equal(rep.envelope, RCW_ERR_BAD_BINARY);
+  assert_false(rep.preamble_ok);
+  assert_true(rep.load_rcw_ok);
+  assert_false(rep.has_checksum);
+  assert_false(rep.ok);
+  assert_int_equal(rep.image_end, len);
+  bin[0] ^= 0x01;
+
+  bin[LOAD_RCW_CMD_BYTE] = PBI_GENCMD_STOP;
+  assert_int_equal(rcw_pbl_verify(bin, len, 1, NULL, NULL, &rep), RCW_ERR_BAD_BINARY);
+  assert_true(rep.preamble_ok);
+  assert_false(rep.load_rcw_ok);
+  assert_int_equal(rep.word1, PBL_CMD_STOP);
+  free(bin);
+}
+
 int main(void) {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_parse_stop),
@@ -443,6 +675,14 @@ int main(void) {
     cmocka_unit_test(test_check_development_buffer),
     cmocka_unit_test(test_check_unknown_word),
     cmocka_unit_test(test_check_truncated),
+    cmocka_unit_test(test_from_rcw),
+    cmocka_unit_test(test_verify_ok),
+    cmocka_unit_test(test_verify_padding),
+    cmocka_unit_test(test_verify_checksum),
+    cmocka_unit_test(test_verify_crc),
+    cmocka_unit_test(test_verify_pbi_length),
+    cmocka_unit_test(test_verify_truncated),
+    cmocka_unit_test(test_verify_not_pbl),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
