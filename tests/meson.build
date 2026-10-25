@@ -14,6 +14,7 @@ test_sources = {
   'test_decode'    : files('test_decode.c'),
   'test_pbl'       : files('test_pbl.c'),
   'test_preprocess': files('test_preprocess.c'),
+  'test_source'    : files('test_source.c'),
   'test_context'   : files('test_context.c'),
 }
 

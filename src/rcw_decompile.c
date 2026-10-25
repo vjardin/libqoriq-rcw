@@ -118,16 +118,11 @@ collect_labels(const uint8_t *pbi, size_t pbi_len, int littleendian) {
   return label_of;
 }
 
-/* "L3" for a labelled jump target, else the raw offset. */
-static void
-print_jump_target(strbuf_t *sb, const int *label_of, size_t pbi_len,
-                  size_t i, uint32_t offset) {
+static int
+jump_label(const int *label_of, size_t pbi_len, size_t i, uint32_t offset) {
   long t = jump_target(i, offset, pbi_len);
 
-  if (label_of && t >= 0 && label_of[t] >= 0)
-    strbuf_printf(sb, "L%d", label_of[t]);
-  else
-    strbuf_printf(sb, "0x%08x", offset);
+  return (label_of && t >= 0) ? label_of[t] : -1;
 }
 
 static rcw_error_t
@@ -155,107 +150,18 @@ disassemble_pbi(strbuf_t *sb, const uint8_t *pbi, size_t pbi_len,
       continue;
     }
 
-    switch (c.op) {
-    case RCW_PBI_CCSR_WRITE:
-      strbuf_printf(sb, "%s 0x%08x,0x%08x\n",
-                    c.width == 1 ? "write.b1" : "write", c.param, c.args[0]);
-      break;
-
-    case RCW_PBI_ALTCFG_WRITE: {
-      uint32_t b = (c.word >> PBI_AWRITE_B_SHIFT) & PBI_AWRITE_B_BITS;
-      if (b == PBI_AWRITE_B3)
-        strbuf_printf(sb, "awrite 0x%08x", c.param);
+    int label = (c.op == RCW_PBI_JUMP || c.op == RCW_PBI_JUMP_COND)
+                ? jump_label(label_of, pbi_len, i, c.args[0]) : -1;
+    if (label >= 0) {
+      if (c.op == RCW_PBI_JUMP)
+        strbuf_printf(sb, "jump L%d\n", label);
       else
-        strbuf_printf(sb, "awrite.b%u 0x%08x", b, c.param);
-      for (size_t k = 0; k < c.nargs; k++)
-        strbuf_printf(sb, ",0x%08x", c.args[k]);
-      strbuf_printf(sb, "\n");
-      break;
-    }
+        strbuf_printf(sb, "jumpc L%d,0x%08x\n", label, c.args[1]);
+    } else {
+      char line[RCW_PBI_SOURCE_MAX];
 
-    case RCW_PBI_BLOCKCOPY:
-      strbuf_printf(sb, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x\n",
-                    c.param & PBI_BLOCKCOPY_SRC_MAX, c.args[0], c.args[1], c.args[2]);
-      break;
-
-    case RCW_PBI_CCSR_COPY: {
-      static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
-      strbuf_printf(sb, "ccsrcopy.%s 0x%08x,0x%08x,0x%08x\n",
-                    wsuf[c.param & PBI_CCSR_COPY_TYPE_MASK], c.args[0], c.args[1], c.args[2]);
-      break;
-    }
-
-    case RCW_PBI_CCSR_RMW: {
-      static const char *msuf[4] = { "?", "b1", "b2", "b4" };
-      static const char *opnm[4] = { "ccsrset", "ccsrclear",
-                                     "ccsrreplace", "ccsrreserved" };
-      uint32_t mt  = c.param & PBI_RMW_MASK_TYPE_MASK;
-      uint32_t ops = (c.param >> PBI_RMW_OPS_SHIFT) & PBI_RMW_OPS_MASK;
-      if (ops == PBI_RMW_OPS_REPLACE)
-        strbuf_printf(sb, "%s.%s 0x%08x,0x%08x,0x%08x\n",
-                      opnm[ops], msuf[mt], c.args[0], c.args[1], c.args[2]);
-      else
-        strbuf_printf(sb, "%s.%s 0x%08x,0x%08x\n",
-                      opnm[ops], msuf[mt], c.args[0], c.args[1]);
-      break;
-    }
-
-    case RCW_PBI_LOAD_RCW:
-    case RCW_PBI_LOAD_RCW_NOCS:
-      strbuf_printf(sb, "/* Disassemble not implemented for word 0x%08x */\n", c.word);
-      break;
-
-    case RCW_PBI_LOADACWINDOW:
-      strbuf_printf(sb, "loadacwindow 0x%08x\n", c.param & PBI_ACWINDOW_MAX);
-      break;
-
-    case RCW_PBI_LOADCONDITION:
-      strbuf_printf(sb, "loadc 0x%08x,0x%08x\n", c.args[0], c.args[1]);
-      break;
-
-    case RCW_PBI_LOAD_SEC_HDR:
-      strbuf_printf(sb, "loadsecurityheader ");
-      for (size_t k = 0; k < c.nargs; k++)
-        strbuf_printf(sb, "%s0x%08x", (k == 0) ? "" : ",", c.args[k]);
-      strbuf_printf(sb, "\n");
-      break;
-
-    case RCW_PBI_LOAD_CSF_PTR:
-      strbuf_printf(sb, "loadboot1csfptr 0x%08x\n", c.args[0]);
-      break;
-
-    case RCW_PBI_POLL_SHORT:
-    case RCW_PBI_POLL_LONG:
-      strbuf_printf(sb, "%s 0x%08x,0x%08x,0x%08x\n", rcw_pbi_op_name(c.op),
-                    c.args[0], c.args[1], c.args[2]);
-      break;
-
-    case RCW_PBI_WAIT:
-      strbuf_printf(sb, "wait 0x%08x\n", c.param);
-      break;
-
-    case RCW_PBI_JUMP:
-      strbuf_printf(sb, "jump ");
-      print_jump_target(sb, label_of, pbi_len, i, c.args[0]);
-      strbuf_printf(sb, "\n");
-      break;
-
-    case RCW_PBI_JUMP_COND:
-      strbuf_printf(sb, "jumpc ");
-      print_jump_target(sb, label_of, pbi_len, i, c.args[0]);
-      strbuf_printf(sb, ",0x%08x\n", c.args[1]);
-      break;
-
-    case RCW_PBI_CRC_STOP:
-      strbuf_printf(sb, "/* CRC and Stop command (CRC 0x%08x)*/\n", c.args[0]);
-      break;
-
-    case RCW_PBI_STOP:
-      strbuf_printf(sb, "/* Stop command */\n");
-      break;
-
-    case RCW_PBI_UNKNOWN:
-      break;
+      rcw_pbi_to_source(&c, line, sizeof(line));
+      strbuf_printf(sb, "%s\n", line);
     }
 
     i += step;

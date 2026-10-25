@@ -117,3 +117,128 @@ rcw_pbi_op_name(rcw_pbi_op_t op) {
   }
   return "unknown";
 }
+
+typedef struct {
+  char *buf;
+  size_t size;
+  size_t len;
+} source_out_t;
+
+__attribute__((format(printf, 2, 3)))
+static void
+out_printf(source_out_t *o, const char *fmt, ...) {
+  size_t room = o->len < o->size ? o->size - o->len : 0;
+  va_list ap;
+  int n;
+
+  va_start(ap, fmt);
+  n = vsnprintf(room ? o->buf + o->len : NULL, room, fmt, ap);
+  va_end(ap);
+  if (n > 0)
+    o->len += (size_t)n;
+}
+
+int
+rcw_pbi_to_source(const rcw_pbi_cmd_t *c, char *buf, size_t size) {
+  static const char *wsuf[4] = { "?", "b1", "b2", "b4" };
+  static const char *opnm[4] = { "ccsrset", "ccsrclear", "ccsrreplace", "ccsrreserved" };
+  source_out_t o = { .buf = buf, .size = size, .len = 0 };
+
+  if (size > 0)
+    buf[0] = '\0';
+
+  switch (c->op) {
+  case RCW_PBI_CCSR_WRITE:
+    out_printf(&o, "%s 0x%08x,0x%08x", c->width == 1 ? "write.b1" : "write", c->param, c->args[0]);
+    break;
+
+  case RCW_PBI_ALTCFG_WRITE: {
+    uint32_t b = (c->word >> PBI_AWRITE_B_SHIFT) & PBI_AWRITE_B_BITS;
+
+    if (b == PBI_AWRITE_B3)
+      out_printf(&o, "awrite 0x%08x", c->param);
+    else
+      out_printf(&o, "awrite.b%u 0x%08x", b, c->param);
+    for (size_t k = 0; k < c->nargs; k++)
+      out_printf(&o, ",0x%08x", c->args[k]);
+    break;
+  }
+
+  case RCW_PBI_BLOCKCOPY:
+    out_printf(&o, "blockcopy 0x%02x,0x%08x,0x%08x,0x%08x",
+               c->param & PBI_BLOCKCOPY_SRC_MAX, c->args[0], c->args[1], c->args[2]);
+    break;
+
+  case RCW_PBI_CCSR_COPY:
+    out_printf(&o, "ccsrcopy.%s 0x%08x,0x%08x,0x%08x",
+               wsuf[c->param & PBI_CCSR_COPY_TYPE_MASK], c->args[0], c->args[1], c->args[2]);
+    break;
+
+  case RCW_PBI_CCSR_RMW: {
+    uint32_t mt  = c->param & PBI_RMW_MASK_TYPE_MASK;
+    uint32_t ops = (c->param >> PBI_RMW_OPS_SHIFT) & PBI_RMW_OPS_MASK;
+
+    if (ops == PBI_RMW_OPS_REPLACE)
+      out_printf(&o, "%s.%s 0x%08x,0x%08x,0x%08x",
+                 opnm[ops], wsuf[mt], c->args[0], c->args[1], c->args[2]);
+    else
+      out_printf(&o, "%s.%s 0x%08x,0x%08x", opnm[ops], wsuf[mt], c->args[0], c->args[1]);
+    break;
+  }
+
+  case RCW_PBI_LOAD_RCW:
+  case RCW_PBI_LOAD_RCW_NOCS:
+    out_printf(&o, "/* Disassemble not implemented for word 0x%08x */", c->word);
+    break;
+
+  case RCW_PBI_LOADACWINDOW:
+    out_printf(&o, "loadacwindow 0x%08x", c->param & PBI_ACWINDOW_MAX);
+    break;
+
+  case RCW_PBI_LOADCONDITION:
+    out_printf(&o, "loadc 0x%08x,0x%08x", c->args[0], c->args[1]);
+    break;
+
+  case RCW_PBI_LOAD_SEC_HDR:
+    out_printf(&o, "loadsecurityheader ");
+    for (size_t k = 0; k < c->nargs; k++)
+      out_printf(&o, "%s0x%08x", (k == 0) ? "" : ",", c->args[k]);
+    break;
+
+  case RCW_PBI_LOAD_CSF_PTR:
+    out_printf(&o, "loadboot1csfptr 0x%08x", c->args[0]);
+    break;
+
+  case RCW_PBI_POLL_SHORT:
+  case RCW_PBI_POLL_LONG:
+    out_printf(&o, "%s 0x%08x,0x%08x,0x%08x", rcw_pbi_op_name(c->op),
+               c->args[0], c->args[1], c->args[2]);
+    break;
+
+  case RCW_PBI_WAIT:
+    out_printf(&o, "wait 0x%08x", c->param);
+    break;
+
+  case RCW_PBI_JUMP:
+    out_printf(&o, "jump 0x%08x", c->args[0]);
+    break;
+
+  case RCW_PBI_JUMP_COND:
+    out_printf(&o, "jumpc 0x%08x,0x%08x", c->args[0], c->args[1]);
+    break;
+
+  case RCW_PBI_CRC_STOP:
+    out_printf(&o, "/* CRC and Stop command (CRC 0x%08x)*/", c->args[0]);
+    break;
+
+  case RCW_PBI_STOP:
+    out_printf(&o, "/* Stop command */");
+    break;
+
+  case RCW_PBI_UNKNOWN:
+    out_printf(&o, "/* Unknown word 0x%08x */", c->word);
+    break;
+  }
+
+  return (int)o.len;
+}
